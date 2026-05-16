@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="./assets/banner.svg" alt="phoenix-terminal — interactive trading terminal for the Phoenix CLOB on Solana" width="100%"/>
+<img src="./assets/hero.svg" alt="phoenix-terminal — interactive trading terminal for the Phoenix CLOB on Solana" width="100%"/>
 
 **The first interactive trading terminal for the [Phoenix CLOB](https://github.com/Ellipsis-Labs/phoenix-v1) on Solana.**
 
