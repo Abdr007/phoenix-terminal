@@ -292,12 +292,12 @@ export class Watcher {
             client.baseLotsToBaseAtoms(baseLots, marketAddr),
             marketAddr,
           );
-          // Side is approximate from event ordering — Phoenix's FillEvent doesn't
-          // explicitly carry side, but the taker-side can be inferred from the
-          // surrounding PlaceEvent or by comparing to the snap's best.
-          const snap = this.snaps.get(marketAddr)!;
-          let side: 'bid' | 'ask' = 'bid';
-          if (snap.mid !== null) side = priceUsd > snap.mid ? 'bid' : 'ask';
+          // Maker side from orderSequenceNumber sign (canonical SDK pattern).
+          // We display the TAKER side in the watcher feed (the side that lifted
+          // the resting order) — which is the opposite of the maker side.
+          const dir = Phoenix.sign(Phoenix.toBN(f.orderSequenceNumber).fromTwos(64));
+          const makerSide: 'bid' | 'ask' = dir < 0 ? 'bid' : 'ask';
+          const side: 'bid' | 'ask' = makerSide === 'bid' ? 'ask' : 'bid';
           this.fills.unshift({ ts: Date.now(), marketSymbol: def.symbol, priceUsd, sizeBase, side });
           if (this.fills.length > Watcher.MAX_FILLS) this.fills.length = Watcher.MAX_FILLS;
         }
