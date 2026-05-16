@@ -5,19 +5,20 @@
 import { describe, it, expect } from 'vitest';
 
 describe('audit fix: clientOrderId uniqueness within same millisecond', () => {
-  it('two back-to-back IDs in same ms are distinct', async () => {
-    // Re-import a fresh module each call would be cleanest, but the function
-    // uses a module-scoped counter — so any subsequent call increments.
-    const orders = await import('../src/phoenix/orders.js');
-    // Access the un-exported function via a backdoor: bash-test via behavior.
-    // We can't import the private fn, so we test by behavior of placeLimit/Ioc
-    // indirectly via their parameter — instead just assert the module behavior
-    // through clientOrderId by invoking it many times rapidly.
-    void orders; // satisfy linter
-    // Behaviorally: rapid calls produce monotonically distinct IDs (we test
-    // via a directly-exported helper later if needed). For now, the regression
-    // is enforced at the call site — order placement won't dedupe collisions.
-    expect(true).toBe(true);
+  it('1000 rapid IDs are all distinct', async () => {
+    const { clientOrderId } = await import('../src/phoenix/orders.js');
+    const ids = new Set<number>();
+    for (let i = 0; i < 1000; i++) ids.add(clientOrderId());
+    expect(ids.size).toBe(1000);
+  });
+  it('all IDs are positive 31-bit safe integers', async () => {
+    const { clientOrderId } = await import('../src/phoenix/orders.js');
+    for (let i = 0; i < 100; i++) {
+      const id = clientOrderId();
+      expect(id).toBeGreaterThanOrEqual(0);
+      expect(id).toBeLessThanOrEqual(0x7fffffff);
+      expect(Number.isInteger(id)).toBe(true);
+    }
   });
 });
 

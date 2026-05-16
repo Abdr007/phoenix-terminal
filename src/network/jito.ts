@@ -147,10 +147,16 @@ async function rpc<T>(method: string, params: unknown[]): Promise<T> {
   } finally {
     clearTimeout(to);
   }
-  if (!res.ok) throw new Error(`Jito ${method}: HTTP ${res.status}`);
+  if (!res.ok) {
+    // Surface server body for diagnostics (esp. on 429 / 5xx)
+    const body = await res.text().catch(() => '');
+    const snippet = body.slice(0, 160);
+    throw new Error(`Jito ${method}: HTTP ${res.status}${snippet ? ` — ${snippet}` : ''}`);
+  }
   const json = (await res.json()) as JsonRpcResponse<T>;
   if (json.error) throw new Error(`Jito ${method}: ${json.error.message}`);
-  return json.result as T;
+  if (json.result === undefined) throw new Error(`Jito ${method}: response missing 'result' and 'error'`);
+  return json.result;
 }
 
 /**
@@ -188,9 +194,13 @@ export async function getBundleStatuses(bundleIds: string[]): Promise<BundleStat
  */
 export async function awaitBundleLanded(bundleId: string, timeoutMs = 30_000): Promise<{ signature: string; slot: number } | null> {
   const start = Date.now();
+  // Adaptive poll: tight (400ms) at first when the bundle is most likely to land,
+  // backs off to 1s after 5s have elapsed.
+  let consecutive429 = 0;
   while (Date.now() - start < timeoutMs) {
     try {
       const statuses = await getBundleStatuses([bundleId]);
+      consecutive429 = 0;
       const s = statuses.find((x) => x.bundle_id === bundleId);
       if (s && (s.confirmation_status === 'confirmed' || s.confirmation_status === 'finalized')) {
         return { signature: s.transactions[0] ?? '', slot: s.slot };
@@ -199,9 +209,14 @@ export async function awaitBundleLanded(bundleId: string, timeoutMs = 30_000): P
         throw new Error(`bundle ${bundleId} failed: ${JSON.stringify(s.err)}`);
       }
     } catch (e) {
-      getLogger().debug('jito', `poll error: ${(e as Error).message}`);
+      const msg = (e as Error).message;
+      if (msg.includes('429')) consecutive429++;
+      getLogger().debug('jito', `poll error: ${msg}`);
     }
-    await new Promise((r) => setTimeout(r, 1_000));
+    // Back off on 429 to respect Jito's rate limit; otherwise tight poll early, slower later.
+    const elapsed = Date.now() - start;
+    const delay = consecutive429 > 0 ? Math.min(2000 * consecutive429, 5000) : elapsed < 5000 ? 400 : 1000;
+    await new Promise((r) => setTimeout(r, delay));
   }
   return null;
 }
@@ -219,19 +234,24 @@ export async function sendBundleSimple(
 ): Promise<{ signature: string; bundleId: string; slot: number }> {
   if (txIxs.length === 0) throw new Error('sendBundleSimple: no instructions');
 
-  // Append the tip ix to the last tx
-  const lastIdx = txIxs.length - 1;
-  txIxs[lastIdx] = [...txIxs[lastIdx], tipInstruction(signer.publicKey, tipLamports)];
+  // CLONE so we don't mutate the caller's array (defensive — fix from audit)
+  const clonedIxs = txIxs.map((arr) => [...arr]);
+  const lastIdx = clonedIxs.length - 1;
+  clonedIxs[lastIdx].push(tipInstruction(signer.publicKey, tipLamports));
 
-  const txs: Transaction[] = txIxs.map((ixs) => {
+  const txs: Transaction[] = clonedIxs.map((ixs) => {
     const tx = new Transaction({ recentBlockhash, feePayer: signer.publicKey });
     tx.add(...ixs);
     tx.sign(signer);
     return tx;
   });
 
+  // Explicitly check signature presence rather than non-null asserting
+  const firstSig = txs[0].signature;
+  if (!firstSig) throw new Error('sendBundleSimple: tx[0] failed to sign');
+
   const { bundleId } = await sendBundle(txs);
   const landed = await awaitBundleLanded(bundleId);
   if (!landed) throw new Error(`bundle ${bundleId} did not land within timeout`);
-  return { signature: bs58.encode(txs[0].signature!), bundleId, slot: landed.slot };
+  return { signature: bs58.encode(firstSig), bundleId, slot: landed.slot };
 }

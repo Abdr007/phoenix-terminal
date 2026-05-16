@@ -154,18 +154,19 @@ export class Maker {
   /** Decode the tx behind a Phoenix log; attribute any fills involving our wallet. */
   private async handleProgramLog(signature: string): Promise<void> {
     try {
-      const ptx = await Phoenix.getPhoenixEventsFromTransactionSignature(this.connection, signature);
       const phoenix = getPhoenixClient();
       const client = await phoenix.raw();
+      // Resolve OUR market once; reuse for every ix in the tx (perf fix from audit).
+      const { def } = await phoenix.getMarket(this.cfg.symbol);
+      const ourMarketAddr = def.address;
+      const ptx = await Phoenix.getPhoenixEventsFromTransactionSignature(this.connection, signature);
       const walletStr = this.signer.publicKey.toBase58();
       let attributed = false;
       let attributedFee = 0;
 
       for (const ix of ptx.instructions) {
         const marketAddr = ix.header?.market?.toBase58();
-        if (!marketAddr) continue;
-        const { def } = await phoenix.getMarket(this.cfg.symbol);
-        if (marketAddr !== def.address) continue; // only fills on our MM market
+        if (!marketAddr || marketAddr !== ourMarketAddr) continue; // only fills on our MM market
 
         // FillSummary carries the fee total for the ix
         let totalFeeLots = 0;

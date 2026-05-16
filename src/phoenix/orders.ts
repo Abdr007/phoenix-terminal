@@ -27,7 +27,8 @@ const PHOENIX_SIDE = (s: Side): Phoenix.Side => (s === 'bid' ? Phoenix.Side.Bid 
 
 // Monotonic per-session counter ensures uniqueness even within the same ms
 let _clientOrderCounter = 0;
-function clientOrderId(): number {
+/** @internal — exported for testability. Monotonic 16-bit counter packed with ms-second timestamp. */
+export function clientOrderId(): number {
   _clientOrderCounter = (_clientOrderCounter + 1) & 0xffff; // 16-bit counter
   // Top 15 bits = seconds since epoch (low bits), low 16 bits = counter → unique 31-bit
   const seconds = Math.floor(Date.now() / 1000) & 0x7fff;
@@ -236,29 +237,44 @@ export async function placeIoc(connection: Connection, signer: Keypair, args: Pl
   await phoenix.refresh(def.address);
 
   // ─── Pre-trade slippage guard (uses SDK's router math) ──────────────────
+  //
+  // Phoenix router semantics:
+  //   Side.Ask  — inAmount = BASE we sell  → outAmount = QUOTE we receive
+  //   Side.Bid  — inAmount = QUOTE we spend → outAmount = BASE we receive
+  //
+  // The caller specifies `sizeBase` (their intent: trade N units of base).
+  //   - For Ask: pass sizeBase directly to router; effective price = quoteOut / baseIn.
+  //   - For Bid: estimate quoteIn = sizeBase × bestAsk, pass that; verify baseOut ≈ sizeBase
+  //     and compute effective price = quoteIn / baseOut.
   if (args.maxSlippageBps !== undefined && args.maxSlippageBps > 0) {
     const ladder = state.getUiLadder(20);
-    const sideEnum = args.side === 'bid' ? Phoenix.Side.Bid : Phoenix.Side.Ask;
-    const expectedOut = Phoenix.getExpectedOutAmountRouter({
-      uiLadder: ladder, side: sideEnum, takerFeeBps: 2, inAmount: args.sizeBase,
-    });
     const bestBid = ladder.bids[0]?.price ?? 0;
     const bestAsk = ladder.asks[0]?.price ?? 0;
-    if (bestBid > 0 && bestAsk > 0 && expectedOut > 0) {
+    if (bestBid > 0 && bestAsk > 0) {
       const mid = (bestBid + bestAsk) / 2;
-      // For asks (selling base), effective price = expectedOut / sizeBase (quote per base)
-      // For bids (buying base), inAmount is base, expectedOut is base too if Phoenix routes that way
-      // Phoenix's router for Bid takes quote in → returns base out. For Ask: base in → quote out.
-      // sizeBase here is always base, but for Bid you'd want sizeQuote — caller normalizes.
-      // Simplest universal: compute expected_price = how much quote per base actually moved
-      const effectivePrice = args.side === 'bid' ? args.sizeBase / expectedOut : expectedOut / args.sizeBase;
-      const impactBps = Math.abs(effectivePrice - mid) / mid * 10_000;
-      if (impactBps > args.maxSlippageBps) {
-        throw new Error(
-          `Pre-trade impact ${impactBps.toFixed(1)}bps exceeds --max-slippage ${args.maxSlippageBps}bps. ` +
-          `Expected fill ${effectivePrice.toFixed(4)} vs mid ${mid.toFixed(4)}. ` +
-          `Increase --max-slippage or use a smaller size.`,
-        );
+      let effectivePrice = 0;
+      if (args.side === 'ask') {
+        const quoteOut = Phoenix.getExpectedOutAmountRouter({
+          uiLadder: ladder, side: Phoenix.Side.Ask, takerFeeBps: 2, inAmount: args.sizeBase,
+        });
+        if (quoteOut > 0) effectivePrice = quoteOut / args.sizeBase;
+      } else {
+        // Bid: estimate quote spend at best ask, ask router how much base we get back
+        const estQuoteIn = args.sizeBase * bestAsk;
+        const baseOut = Phoenix.getExpectedOutAmountRouter({
+          uiLadder: ladder, side: Phoenix.Side.Bid, takerFeeBps: 2, inAmount: estQuoteIn,
+        });
+        if (baseOut > 0) effectivePrice = estQuoteIn / baseOut;
+      }
+      if (effectivePrice > 0) {
+        const impactBps = Math.abs(effectivePrice - mid) / mid * 10_000;
+        if (impactBps > args.maxSlippageBps) {
+          throw new Error(
+            `Pre-trade impact ${impactBps.toFixed(1)}bps exceeds --max-slippage ${args.maxSlippageBps}bps. ` +
+            `Expected fill ${effectivePrice.toFixed(4)} vs mid ${mid.toFixed(4)}. ` +
+            `Increase --max-slippage or use a smaller size.`,
+          );
+        }
       }
     }
   }
