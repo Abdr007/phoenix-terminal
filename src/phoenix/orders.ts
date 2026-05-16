@@ -18,6 +18,7 @@ import * as Phoenix from '@ellipsis-labs/phoenix-sdk';
 import { getPhoenixClient } from './client.js';
 import { makerSetupIxs, invalidateSetupCache } from './seats.js';
 import { getSigningGuard } from '../security/signing-guard.js';
+import { withSigning } from '../wallet/walletManager.js';
 import { getLogger } from '../utils/logger.js';
 import { loadConfig } from '../config/index.js';
 import { Fill, OpenOrder, OrderResult, Side } from '../types/index.js';
@@ -27,12 +28,23 @@ const PHOENIX_SIDE = (s: Side): Phoenix.Side => (s === 'bid' ? Phoenix.Side.Bid 
 
 // Monotonic per-session counter ensures uniqueness even within the same ms
 let _clientOrderCounter = 0;
-/** @internal — exported for testability. Monotonic 16-bit counter packed with ms-second timestamp. */
+const _clientOrderEpochOffsetSec = Math.floor(Date.now() / 1000);
+/**
+ * Monotonic per-process clientOrderId — uses a 16-bit counter packed with the
+ * elapsed-since-process-start seconds (also 16 bits, wrapping at ~18h). Since
+ * Phoenix only requires uniqueness for the lifetime of a resting order (TTL
+ * ≤ a few minutes for our makers), 16-bit second granularity is plenty. Using
+ * "seconds since process start" instead of "seconds since epoch" pushes the
+ * wraparound to after most maker uptimes; long-running makers reset on
+ * restart anyway.
+ *
+ * @internal — exported for testability.
+ */
 export function clientOrderId(): number {
-  _clientOrderCounter = (_clientOrderCounter + 1) & 0xffff; // 16-bit counter
-  // Top 15 bits = seconds since epoch (low bits), low 16 bits = counter → unique 31-bit
-  const seconds = Math.floor(Date.now() / 1000) & 0x7fff;
-  return ((seconds << 16) | _clientOrderCounter) & 0x7fffffff;
+  _clientOrderCounter = (_clientOrderCounter + 1) & 0xffff;
+  const elapsedSec = (Math.floor(Date.now() / 1000) - _clientOrderEpochOffsetSec) & 0xffff;
+  // Top 15 bits = elapsed (wraps at 18h12m), low 16 bits = counter
+  return (((elapsedSec & 0x7fff) << 16) | _clientOrderCounter) & 0x7fffffff;
 }
 
 interface SendOpts {
@@ -61,23 +73,27 @@ async function sendTx(
 ): Promise<string> {
   const all = withComputeBudget(ixs, opts);
 
-  if (opts.useJito) {
-    const { sendBundleSimple, defaultTipLamports } = await import('../network/jito.js');
-    const { blockhash } = await connection.getLatestBlockhash('confirmed');
-    const tip = opts.tipLamports ?? defaultTipLamports();
-    const { signature, bundleId, slot } = await sendBundleSimple(signer, [all], blockhash, tip);
-    getLogger().info('tx', `[${opts.label}] Jito bundle ${bundleId} landed in slot ${slot} — sig ${signature}`);
-    return signature;
-  }
+  // Gate the entire signing window so the wallet manager won't zero the
+  // secret-key bytes mid-transaction if disconnect() is called concurrently.
+  return withSigning(async () => {
+    if (opts.useJito) {
+      const { sendBundleSimple, defaultTipLamports } = await import('../network/jito.js');
+      const { blockhash } = await connection.getLatestBlockhash('confirmed');
+      const tip = opts.tipLamports ?? defaultTipLamports();
+      const { signature, bundleId, slot } = await sendBundleSimple(signer, [all], blockhash, tip);
+      getLogger().info('tx', `[${opts.label}] Jito bundle ${bundleId} landed in slot ${slot} — sig ${signature}`);
+      return signature;
+    }
 
-  const tx = new Transaction().add(...all);
-  const sig = await sendAndConfirmTransaction(connection, tx, [signer], {
-    skipPreflight: opts.skipPreflight ?? true,
-    commitment: 'confirmed',
-    maxRetries: 3,
+    const tx = new Transaction().add(...all);
+    const sig = await sendAndConfirmTransaction(connection, tx, [signer], {
+      skipPreflight: opts.skipPreflight ?? true,
+      commitment: 'confirmed',
+      maxRetries: 3,
+    });
+    getLogger().debug('tx', `[${opts.label}] confirmed ${sig}`);
+    return sig;
   });
-  getLogger().debug('tx', `[${opts.label}] confirmed ${sig}`);
-  return sig;
 }
 
 /** Idempotent ATA + sync-native ixs to wrap a given amount of SOL into wSOL. */
@@ -315,11 +331,19 @@ export async function placeIoc(connection: Connection, signer: Keypair, args: Pl
     ),
   );
 
+  // Phoenix IOC semantics:
+  //   Ask  — sizeInBaseUnits is base to sell;       sizeInQuoteUnits unused
+  //   Bid  — sizeInBaseUnits is target base to buy; sizeInQuoteUnits caps the
+  //          quote spend (when both are set, the lesser binds). Setting it to
+  //          0 means "no quote cap" — bid will consume up to worstPrice. We
+  //          set an explicit cap at the worst-acceptable price to prevent an
+  //          unexpected quote drain on thin books.
+  const quoteCap = args.side === 'bid' ? args.sizeBase * worstPrice : 0;
   const swapIx = client.getImmediateOrCancelOrderIxfromTemplate(def.address, trader, {
     side: PHOENIX_SIDE(args.side),
     priceAsFloat: worstPrice,
     sizeInBaseUnits: args.sizeBase,
-    sizeInQuoteUnits: 0,
+    sizeInQuoteUnits: quoteCap,
     minBaseUnitsToFill: 0,
     minQuoteUnitsToFill: 0,
     selfTradeBehavior: Phoenix.SelfTradeBehavior.CancelProvide,

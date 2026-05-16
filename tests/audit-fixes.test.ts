@@ -143,6 +143,39 @@ describe('audit fix: WAC PnL handles zero-crossings', () => {
   });
 });
 
+describe('audit fix: withSigning wraps in-flight counter', () => {
+  it('counter increments/decrements correctly around resolve and reject', async () => {
+    const { WalletManager, withSigning } = await import('../src/wallet/walletManager.js');
+    const { Connection } = await import('@solana/web3.js');
+    const w = new WalletManager(new Connection('https://api.mainnet-beta.solana.com'));
+    expect(WalletManager.activeManager).toBe(w);
+    // After resolved
+    const a = await withSigning(async () => 42);
+    expect(a).toBe(42);
+    // After rejected — counter still decremented
+    await expect(withSigning(async () => { throw new Error('boom'); })).rejects.toThrow('boom');
+    // disconnect() must drain quickly since counter is 0
+    const t0 = Date.now();
+    await w.disconnect();
+    expect(Date.now() - t0).toBeLessThan(200);
+  });
+});
+
+describe('audit fix: clientOrderId uses elapsed-since-start (not absolute epoch)', () => {
+  it('first 16 IDs in a fresh run have low seconds bits', async () => {
+    const { clientOrderId } = await import('../src/phoenix/orders.js');
+    // The elapsed portion (upper 15 bits) should be 0 or 1 for IDs minted
+    // milliseconds apart — proves we're not packing absolute epoch seconds
+    // which would always have nonzero upper bits.
+    const ids: number[] = [];
+    for (let i = 0; i < 16; i++) ids.push(clientOrderId());
+    for (const id of ids) {
+      const elapsedSec = (id >> 16) & 0x7fff;
+      expect(elapsedSec).toBeLessThan(2);
+    }
+  });
+});
+
 describe('audit fix: journal composite PK keeps multi-fill same-tx events', () => {
   it('two fills with the same signature but different sub_index both insert', async () => {
     const { Journal } = await import('../src/phoenix/journal.js');

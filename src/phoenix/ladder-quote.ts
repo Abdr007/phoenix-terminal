@@ -27,6 +27,7 @@ import { getPhoenixClient } from './client.js';
 import { makerSetupIxs } from './seats.js';
 import { loadConfig } from '../config/index.js';
 import { getSigningGuard } from '../security/signing-guard.js';
+import { withSigning } from '../wallet/walletManager.js';
 
 export interface LadderLevel {
   side: 'bid' | 'ask';
@@ -106,9 +107,19 @@ export async function placeLadder(connection: Connection, signer: Keypair, args:
     placeIx,
   ];
 
-  const tx = new Transaction().add(...ixs);
-  const sig = await sendAndConfirmTransaction(connection, tx, [signer], {
-    skipPreflight: true, commitment: 'confirmed', maxRetries: 3,
+  const sig = await withSigning(async () => {
+    const tx = new Transaction().add(...ixs);
+    return sendAndConfirmTransaction(connection, tx, [signer], {
+      skipPreflight: true, commitment: 'confirmed', maxRetries: 3,
+    });
+  });
+  // Audit-log every ladder send (previously missing per phase-6 audit findings)
+  guard.logAudit({
+    ts: new Date().toISOString(),
+    type: 'place_ladder', market: def.symbol,
+    notionalUsd: args.levels.reduce((s, l) => s + l.priceUsd * l.sizeBase, 0),
+    wallet: trader.toBase58(), result: 'confirmed', signature: sig,
+    reason: `ladder × ${args.levels.length} levels`,
   });
   return sig;
 }

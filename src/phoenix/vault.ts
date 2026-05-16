@@ -25,6 +25,7 @@ import { getPhoenixClient } from './client.js';
 import { makerSetupIxs } from './seats.js';
 import { loadConfig } from '../config/index.js';
 import { getSigningGuard } from '../security/signing-guard.js';
+import { withSigning } from '../wallet/walletManager.js';
 import { getLogger } from '../utils/logger.js';
 import BN from 'bn.js';
 
@@ -38,12 +39,14 @@ function withBudget(ixs: TransactionInstruction[]): TransactionInstruction[] {
 }
 
 async function send(connection: Connection, signer: Keypair, ixs: TransactionInstruction[], label: string): Promise<string> {
-  const tx = new Transaction().add(...withBudget(ixs));
-  const sig = await sendAndConfirmTransaction(connection, tx, [signer], {
-    skipPreflight: true, commitment: 'confirmed', maxRetries: 3,
+  return withSigning(async () => {
+    const tx = new Transaction().add(...withBudget(ixs));
+    const sig = await sendAndConfirmTransaction(connection, tx, [signer], {
+      skipPreflight: true, commitment: 'confirmed', maxRetries: 3,
+    });
+    getLogger().debug('vault', `[${label}] confirmed ${sig}`);
+    return sig;
   });
-  getLogger().debug('vault', `[${label}] confirmed ${sig}`);
-  return sig;
 }
 
 export interface DepositArgs {

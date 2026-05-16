@@ -134,11 +134,7 @@ export class Maker {
     });
 
     // Subscribe to Phoenix program logs to detect our own fills in real time
-    this.logSubId = this.connection.onLogs(
-      Phoenix.PROGRAM_ID,
-      (info) => this.handleProgramLog(info.signature),
-      'confirmed',
-    );
+    this.subscribeLogs();
 
     // first tick immediately, then on interval
     await this.tick();
@@ -149,6 +145,34 @@ export class Maker {
       });
     }, this.cfg.intervalMs);
     this.timer.unref?.();
+  }
+
+  /** (Re)subscribe to Phoenix program logs on the current connection. */
+  private subscribeLogs(): void {
+    this.logSubId = this.connection.onLogs(
+      Phoenix.PROGRAM_ID,
+      (info) => this.handleProgramLog(info.signature),
+      'confirmed',
+    );
+  }
+
+  /**
+   * Called by the RPC manager when an endpoint failover happens. Removes the
+   * stale log subscription on the old connection, swaps in the new one, and
+   * re-establishes the subscription. Without this, makers silently stop
+   * receiving fill events after a failover.
+   */
+  async onConnectionChange(conn: Connection): Promise<void> {
+    if (!this.running) { this.connection = conn; return; }
+    const prevSubId = this.logSubId;
+    const prevConn = this.connection;
+    this.connection = conn;
+    this.logSubId = null;
+    this.subscribeLogs();
+    if (prevSubId !== null) {
+      try { await prevConn.removeOnLogsListener(prevSubId); } catch { /* ignore */ }
+    }
+    getLogger().info('mm', `${this.cfg.symbol}: log subscription re-mounted on new RPC connection`);
   }
 
   /** Decode the tx behind a Phoenix log; attribute any fills involving our wallet. */

@@ -35,6 +35,41 @@ import { theme } from '../cli/theme.js';
 import { fmtNum, fmtUsd } from '../utils/format.js';
 import { txLink, addrLink } from '../utils/explorer.js';
 
+/**
+ * Look up the value following a `--flag` token and parse it as a finite number.
+ * Returns the fallback when the flag is absent. Throws when the flag is present
+ * but the next token is missing, starts with `--`, or doesn't parse to a
+ * finite positive (or zero) number — prevents `--max-slippage --use-jito`
+ * from silently producing NaN and disabling the slippage check.
+ *
+ * @param positive — when true (default), the parsed value must be ≥ 0.
+ */
+function flagNum(args: string[], flag: string, fallback: number, positive = true): number {
+  const idx = args.indexOf(flag);
+  if (idx < 0) return fallback;
+  const next = args[idx + 1];
+  if (next === undefined || next.startsWith('--')) {
+    throw new Error(`${flag} requires a numeric value (got ${next === undefined ? 'nothing' : `"${next}"`}).`);
+  }
+  const n = Number(next);
+  if (!Number.isFinite(n)) {
+    throw new Error(`${flag} expects a number, got "${next}".`);
+  }
+  if (positive && n < 0) {
+    throw new Error(`${flag} must be ≥ 0, got ${n}.`);
+  }
+  return n;
+}
+
+/** Same as flagNum but parses an integer; rejects fractional values. */
+function flagInt(args: string[], flag: string, fallback: number, positive = true): number {
+  const n = flagNum(args, flag, fallback, positive);
+  if (!Number.isInteger(n)) {
+    throw new Error(`${flag} expects an integer, got ${n}.`);
+  }
+  return n;
+}
+
 /** Container for ambient state the tools need. */
 export interface AppCtx {
   wallet: WalletManager;
@@ -50,6 +85,14 @@ export interface AppCtx {
 
 export function registerPhoenixTools(engine: ToolEngine, ctx: AppCtx): void {
   const cfg = loadConfig();
+
+  // Forward RPC failovers to active stateful subscribers so they can re-mount
+  // their log/account subscriptions on the new connection. Without this, the
+  // maker/multi-maker silently stop receiving fill events after a failover.
+  ctx.rpc.onConnectionChange((newConn) => {
+    if (ctx.activeMaker) ctx.activeMaker.onConnectionChange(newConn).catch(() => {});
+    if (ctx.activeMultiMaker) ctx.activeMultiMaker.onConnectionChange(newConn).catch(() => {});
+  });
 
   engine.register({
     name: 'help',
@@ -357,13 +400,12 @@ export function registerPhoenixTools(engine: ToolEngine, ctx: AppCtx): void {
 
       // ─── --execute path ───
       if (!ctx.wallet.isConnected) return renderError('arb --execute requires a connected signing wallet');
-      const flag = (n: string) => { const i = args.indexOf(`--${n}`); return i >= 0 ? args[i + 1] : undefined; };
-      const minBps = Number(flag('min-bps') ?? '10');
-      const size = Number(flag('size') ?? '0');
-      const maxSlippage = Number(flag('max-slippage') ?? '50');
+      const minBps = flagNum(args, '--min-bps', 10);
+      const size = flagNum(args, '--size', 0);
+      const maxSlippage = flagNum(args, '--max-slippage', 50);
       const dryRun = args.includes('--dry-run') || ctx.simulationMode;
 
-      if (!Number.isFinite(size) || size <= 0) return renderError('--size required (e.g. --size 0.05)');
+      if (size <= 0) return renderError('--size required (e.g. --size 0.05)');
 
       const candidates = cycles.filter((c) => c.profitBps >= minBps);
       if (candidates.length === 0) {
@@ -739,12 +781,11 @@ export function registerPhoenixTools(engine: ToolEngine, ctx: AppCtx): void {
       if (ctx.simulationMode) return renderWarn('simulation mode — no on-chain action');
       const symbol = args[0];
       if (!symbol) return renderError('usage: ladder <symbol> --levels N --size BASE --step BPS');
-      const flag = (n: string) => { const i = args.indexOf(`--${n}`); return i >= 0 ? Number(args[i + 1]) : undefined; };
-      const n = flag('levels') ?? 3;
-      const size = flag('size') ?? 0.05;
-      const stepBps = flag('step') ?? 5;
+      const n = flagInt(args, '--levels', 3);
+      const size = flagNum(args, '--size', 0.05);
+      const stepBps = flagNum(args, '--step', 5);
       const useFree = args.includes('--use-free');
-      let mid = flag('mid') ?? NaN;
+      let mid = args.includes('--mid') ? flagNum(args, '--mid', 0) : NaN;
       if (!Number.isFinite(mid)) {
         const book = await fetchOrderbook(symbol, 1);
         if (book.midUsd === null) return renderError(`no mid on ${symbol}; pass --mid PRICE`);
@@ -1491,13 +1532,14 @@ async function placeOrderCmd(ctx: AppCtx, side: 'bid' | 'ask', args: string[]): 
   const ioc = args.includes('--ioc');
   const priceFlag = args.find((a) => a.startsWith('@'));
   const priceUsd = priceFlag ? Number(priceFlag.slice(1)) : NaN;
-  const ttlIdx = args.indexOf('--ttl');
-  const ttlSec = ttlIdx >= 0 ? Number(args[ttlIdx + 1]) : 30;
-  const slipIdx = args.indexOf('--max-slippage');
-  const maxSlippageBps = slipIdx >= 0 ? Number(args[slipIdx + 1]) : undefined;
+  // Use flagNum so `--max-slippage --use-jito` fails loud instead of
+  // silently producing NaN and disabling the slippage check.
+  const ttlSec = flagInt(args, '--ttl', 30);
+  const maxSlippageBps = args.includes('--max-slippage')
+    ? flagNum(args, '--max-slippage', 0)
+    : undefined;
   const useJito = args.includes('--use-jito') || args.includes('--jito');
-  const tipIdx = args.indexOf('--tip');
-  const tipLamports = tipIdx >= 0 ? Number(args[tipIdx + 1]) : undefined;
+  const tipLamports = args.includes('--tip') ? flagInt(args, '--tip', 0) : undefined;
 
   const signer = ctx.wallet.getKeypair()!;
   const def = findMarket(symbol);

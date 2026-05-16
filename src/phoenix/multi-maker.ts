@@ -139,11 +139,7 @@ export class MultiMarketMaker {
     getLogger().info('mm-multi', `Starting on ${this.markets.map((m) => m.symbol).join(', ')} — size=${this.cfg.quoteSizeBase} base, half=${this.cfg.baseHalfSpreadBps}bps, γ=${this.cfg.riskAversion}`);
 
     // Subscribe to Phoenix program logs once — handler dispatches per market
-    this.logSubId = this.connection.onLogs(
-      Phoenix.PROGRAM_ID,
-      (info) => this.handleProgramLog(info.signature),
-      'confirmed',
-    );
+    this.subscribeLogs();
 
     await this.tick();
     this.timer = setInterval(() => {
@@ -308,6 +304,32 @@ export class MultiMarketMaker {
         await new Promise((r) => setTimeout(r, 250));
       }
     }
+  }
+
+  private subscribeLogs(): void {
+    this.logSubId = this.connection.onLogs(
+      Phoenix.PROGRAM_ID,
+      (info) => this.handleProgramLog(info.signature),
+      'confirmed',
+    );
+  }
+
+  /**
+   * Re-mount the log subscription on a new RPC connection after failover.
+   * Symmetric with Maker.onConnectionChange — without this, the multi-maker
+   * silently stops tracking fills after an RPC switch.
+   */
+  async onConnectionChange(conn: Connection): Promise<void> {
+    if (!this.running) { this.connection = conn; return; }
+    const prevSubId = this.logSubId;
+    const prevConn = this.connection;
+    this.connection = conn;
+    this.logSubId = null;
+    this.subscribeLogs();
+    if (prevSubId !== null) {
+      try { await prevConn.removeOnLogsListener(prevSubId); } catch { /* ignore */ }
+    }
+    getLogger().info('mm-multi', 'log subscription re-mounted on new RPC connection');
   }
 
   /** Detect our fills via program logs, update aggregate inventory + telemetry. */

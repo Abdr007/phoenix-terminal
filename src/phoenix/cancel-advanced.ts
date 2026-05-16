@@ -21,6 +21,7 @@ import * as Phoenix from '@ellipsis-labs/phoenix-sdk';
 import BN from 'bn.js';
 import { getPhoenixClient } from './client.js';
 import { getSigningGuard } from '../security/signing-guard.js';
+import { withSigning } from '../wallet/walletManager.js';
 import { loadConfig } from '../config/index.js';
 import { getLogger } from '../utils/logger.js';
 
@@ -34,12 +35,14 @@ function withBudget(ixs: TransactionInstruction[]): TransactionInstruction[] {
 }
 
 async function send(connection: Connection, signer: Keypair, ixs: TransactionInstruction[], label: string): Promise<string> {
-  const tx = new Transaction().add(...withBudget(ixs));
-  const sig = await sendAndConfirmTransaction(connection, tx, [signer], {
-    skipPreflight: true, commitment: 'confirmed', maxRetries: 3,
+  return withSigning(async () => {
+    const tx = new Transaction().add(...withBudget(ixs));
+    const sig = await sendAndConfirmTransaction(connection, tx, [signer], {
+      skipPreflight: true, commitment: 'confirmed', maxRetries: 3,
+    });
+    getLogger().debug('cancel-adv', `[${label}] confirmed ${sig}`);
+    return sig;
   });
-  getLogger().debug('cancel-adv', `[${label}] confirmed ${sig}`);
-  return sig;
 }
 
 // ─── Cancel specific orders by ID ──────────────────────────────────────────────
@@ -86,7 +89,7 @@ export async function cancelById(connection: Connection, signer: Keypair, args: 
 
   const sig = await send(connection, signer, [ix], `cancel-by-id ${def.symbol} x${args.orders.length}`);
   guard.logAudit({
-    ts: new Date().toISOString(), type: 'cancel_order', market: def.symbol,
+    ts: new Date().toISOString(), type: 'cancel_by_id', market: def.symbol,
     wallet: signer.publicKey.toBase58(), result: 'confirmed', signature: sig,
     reason: `surgical: ${args.orders.length} orders`,
   });
@@ -137,7 +140,7 @@ export async function cancelUpTo(connection: Connection, signer: Keypair, args: 
 
   const sig = await send(connection, signer, [ix], `cancel-up-to ${def.symbol} side=${args.side ?? 'bid'} n=${args.numOrders}`);
   guard.logAudit({
-    ts: new Date().toISOString(), type: 'cancel_order', market: def.symbol,
+    ts: new Date().toISOString(), type: 'cancel_up_to', market: def.symbol,
     side: args.side === 'ask' ? 'ask' : 'bid',
     wallet: signer.publicKey.toBase58(), result: 'confirmed', signature: sig,
     reason: `cancelUpTo n=${args.numOrders}`,
@@ -187,5 +190,12 @@ export async function reduceOrder(connection: Connection, signer: Keypair, args:
       );
 
   const sig = await send(connection, signer, [ix], `reduce ${def.symbol} ${args.side}`);
+  // Audit log (previously missing per phase-6 audit findings)
+  guard.logAudit({
+    ts: new Date().toISOString(), type: 'reduce_order', market: def.symbol,
+    side: args.side,
+    wallet: signer.publicKey.toBase58(), result: 'confirmed', signature: sig,
+    reason: `priceTick=${args.priceInTicks} seq=${args.orderSequenceNumber} newSizeLots=${args.newSizeBaseLots}`,
+  });
   return sig;
 }

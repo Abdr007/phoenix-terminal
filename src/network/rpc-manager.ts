@@ -46,7 +46,7 @@ export class RpcManager {
   private _connection: Connection;
   private monitorTimer: ReturnType<typeof setInterval> | null = null;
   private lastFailoverAt = 0;
-  private onChange: ((c: Connection, ep: RpcEndpoint) => void) | null = null;
+  private onChangeCallbacks: Array<(c: Connection, ep: RpcEndpoint) => void> = [];
   private slotHistory = new Map<string, number>();
 
   constructor(endpoints: RpcEndpoint[]) {
@@ -60,7 +60,7 @@ export class RpcManager {
   get all(): readonly RpcEndpoint[] { return this.endpoints; }
 
   onConnectionChange(cb: (c: Connection, ep: RpcEndpoint) => void): void {
-    this.onChange = cb;
+    this.onChangeCallbacks.push(cb);
   }
 
   async checkOne(ep: RpcEndpoint): Promise<RpcHealth> {
@@ -105,7 +105,11 @@ export class RpcManager {
     this._connection = createConnection(this.endpoints[candidate].url);
     this.lastFailoverAt = now;
     logger.info('rpc', `Failover: ${prev.label} → ${this.endpoints[candidate].label}`);
-    if (this.onChange) this.onChange(this._connection, this.endpoints[candidate]);
+    for (const cb of this.onChangeCallbacks) {
+      try { cb(this._connection, this.endpoints[candidate]); } catch (e) {
+        getLogger().debug('rpc', `onChange callback error: ${(e as Error).message}`);
+      }
+    }
     return true;
   }
 

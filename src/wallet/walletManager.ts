@@ -38,6 +38,9 @@ export class WalletManager {
 
   constructor(connection: Connection) {
     this.connection = connection;
+    // Register as the process-wide active manager. The most-recently-
+    // constructed one wins, which matches the singleton REPL pattern.
+    WalletManager.activeManager = this;
   }
 
   setConnection(connection: Connection): void {
@@ -88,6 +91,10 @@ export class WalletManager {
   // disconnect() waits for this to hit 0 before zeroing the secret key,
   // preventing the keypair from being corrupted mid-transaction.
   private signingInFlight = 0;
+
+  // Called by terminal.ts on startup; lets `withSigning()` find the active
+  // manager without every signer having a WalletManager reference.
+  static activeManager: WalletManager | null = null;
 
   /** Mark the start of a signing operation. MUST be paired with endSigning(). */
   beginSigning(): void { this.signingInFlight++; }
@@ -257,5 +264,24 @@ export class WalletManager {
     const result = { sol: solBal / LAMPORTS_PER_SOL, tokens };
     this.balancesCache = { data: result, expiry: Date.now() + WalletManager.CACHE_TTL };
     return result;
+  }
+}
+
+/**
+ * Wrap an in-flight signing operation so disconnect() awaits it before zeroing
+ * the secret-key buffer. Safe to call even when no active wallet manager is
+ * registered (no-op in that case).
+ *
+ * Use this at every place that calls `tx.sign(signer)` or
+ * `sendAndConfirmTransaction(...)` or `sendBundleSimple(...)`. The wrapper
+ * is cheap; it just increments/decrements a counter.
+ */
+export async function withSigning<T>(fn: () => Promise<T>): Promise<T> {
+  const m = WalletManager.activeManager;
+  m?.beginSigning();
+  try {
+    return await fn();
+  } finally {
+    m?.endSigning();
   }
 }

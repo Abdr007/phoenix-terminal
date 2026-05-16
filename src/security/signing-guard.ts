@@ -29,8 +29,12 @@ export interface GuardCheck { allowed: boolean; reason?: string; }
 export type AuditEventType =
   | 'place_limit'
   | 'place_ioc'
+  | 'place_ladder'
   | 'cancel_order'
   | 'cancel_all'
+  | 'cancel_by_id'
+  | 'cancel_up_to'
+  | 'reduce_order'
   | 'claim_seat'
   | 'deposit'
   | 'withdraw';
