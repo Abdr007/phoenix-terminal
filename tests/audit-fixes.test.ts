@@ -142,3 +142,31 @@ describe('audit fix: WAC PnL handles zero-crossings', () => {
     expect(m.avgCostUsd).toBe(0);
   });
 });
+
+describe('audit fix: journal composite PK keeps multi-fill same-tx events', () => {
+  it('two fills with the same signature but different sub_index both insert', async () => {
+    const { Journal } = await import('../src/phoenix/journal.js');
+    const tmpDir = await import('os').then((os) => os.tmpdir());
+    const path = await import('path').then((p) => p.join(tmpDir, `phx-journal-test-${Date.now()}.db`));
+    const j = new Journal(path);
+    try {
+      const base = {
+        signature: 'SAMETXSAMETX',
+        wallet: 'W', market: 'TEST/USDC',
+        side: 'bid' as const, priceUsd: 100, sizeBase: 1, notionalUsd: 100,
+        isMaker: 1, feeUsd: 0, blockTime: 1, slot: 1,
+      };
+      expect(j.insertFill(base, 0)).toBe(true);
+      expect(j.insertFill({ ...base, priceUsd: 101 }, 1)).toBe(true);
+      expect(j.insertFill({ ...base, priceUsd: 102 }, 2)).toBe(true);
+      // Same (sig, sub_index) → INSERT OR IGNORE → no-op
+      expect(j.insertFill({ ...base, priceUsd: 999 }, 0)).toBe(false);
+      const fills = j.marketFills('W', 'TEST/USDC');
+      expect(fills.length).toBe(3);
+      expect(fills.map((f) => f.priceUsd).sort()).toEqual([100, 101, 102]);
+    } finally {
+      j.close();
+      await import('fs').then((fs) => { try { fs.unlinkSync(path); } catch { /* */ } });
+    }
+  });
+});

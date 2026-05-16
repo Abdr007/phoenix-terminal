@@ -11,7 +11,6 @@
  */
 
 import Anthropic from '@anthropic-ai/sdk';
-import { PublicKey } from '@solana/web3.js';
 import { WalletManager } from '../wallet/walletManager.js';
 import { getJournal } from '../phoenix/journal.js';
 import { Maker } from '../phoenix/maker.js';

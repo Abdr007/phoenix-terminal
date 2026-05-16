@@ -12,14 +12,13 @@
  * Refreshes every 5s. Uses inline screen-clear (same approach as watcher).
  */
 
-import { PublicKey } from '@solana/web3.js';
 import { WalletManager } from '../wallet/walletManager.js';
 import { RpcManager } from '../network/rpc-manager.js';
 import { Maker } from './maker.js';
 import { MultiMarketMaker } from './multi-maker.js';
 import { getJournal } from './journal.js';
 import { getFreeFunds } from './vault.js';
-import { fetchPythPrice, supportedSymbols } from './oracle.js';
+import { fetchPythPrice } from './oracle.js';
 import { fetchOrderbook } from './orderbook.js';
 import { MARKETS } from './markets.js';
 import { getSigningGuard } from '../security/signing-guard.js';

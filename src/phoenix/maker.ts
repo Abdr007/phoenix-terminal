@@ -163,6 +163,9 @@ export class Maker {
       const walletStr = this.signer.publicKey.toBase58();
       let attributed = false;
 
+      // Per-tx counter — disambiguates multiple fills within the same signature
+      // when persisted to the journal (composite PK on (signature, sub_index)).
+      let subIndex = 0;
       for (const ix of ptx.instructions) {
         const marketAddr = ix.header?.market?.toBase58();
         if (!marketAddr || marketAddr !== ourMarketAddr) continue; // only fills on our MM market
@@ -216,14 +219,15 @@ export class Maker {
           this.stats.lastFillSide = side;
           attributed = true;
 
-          // Persist to journal (idempotent on signature)
+          // Persist to journal (idempotent on (signature, sub_index))
           try {
             getJournal().insertFill({
               signature, wallet: walletStr, market: def.symbol, side,
               priceUsd, sizeBase, notionalUsd: notional, isMaker: 1, feeUsd: 0,
               blockTime: Math.floor(Date.now() / 1000), slot: 0,
-            });
+            }, subIndex);
           } catch { /* journal optional */ }
+          subIndex++;
           // Notification
           getNotifier().notify({
             kind: 'fill', severity: 'success',
@@ -256,10 +260,10 @@ export class Maker {
     if (!this.running) return;
     this.running = false;
     if (this.timer) { clearInterval(this.timer); this.timer = null; }
-    if (this.logSubId !== null) {
-      try { await this.connection.removeOnLogsListener(this.logSubId); } catch { /* ignore */ }
-      this.logSubId = null;
-    }
+    // ORDER MATTERS: cancel-all FIRST (while we're still subscribed so any
+    // remaining fills triggered by the cancel land in our handler), THEN
+    // remove the log listener. Reversing the order means fills that arrive
+    // during cancel-confirm are silently dropped from inventory tracking.
     try {
       await cancelAll(this.connection, this.signer, this.cfg.symbol);
       this.stats.cancelsSent++;
@@ -273,6 +277,12 @@ export class Maker {
       });
     } catch (e) {
       getLogger().warn('mm', `Final cancel-all failed: ${(e as Error).message}`);
+    }
+    // Now safe to unsubscribe — any fills attributable to the cancel above
+    // have had a chance to land.
+    if (this.logSubId !== null) {
+      try { await this.connection.removeOnLogsListener(this.logSubId); } catch { /* ignore */ }
+      this.logSubId = null;
     }
   }
 

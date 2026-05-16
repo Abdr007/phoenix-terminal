@@ -82,7 +82,8 @@ export class Journal {
   private init(): void {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS fills (
-        signature TEXT PRIMARY KEY,
+        signature TEXT NOT NULL,
+        sub_index INTEGER NOT NULL DEFAULT 0,
         wallet TEXT NOT NULL,
         market TEXT NOT NULL,
         side TEXT NOT NULL CHECK(side IN ('bid','ask')),
@@ -92,7 +93,8 @@ export class Journal {
         isMaker INTEGER NOT NULL,
         feeUsd REAL NOT NULL DEFAULT 0,
         blockTime INTEGER NOT NULL,
-        slot INTEGER NOT NULL
+        slot INTEGER NOT NULL,
+        PRIMARY KEY (signature, sub_index)
       );
       CREATE INDEX IF NOT EXISTS fills_wallet_market_time ON fills(wallet, market, blockTime DESC);
       CREATE INDEX IF NOT EXISTS fills_wallet_time ON fills(wallet, blockTime DESC);
@@ -103,14 +105,55 @@ export class Journal {
         last_indexed_at INTEGER NOT NULL
       );
     `);
+    // Migrate old schema (PRIMARY KEY signature alone) → composite (signature, sub_index).
+    // Detection: PRAGMA table_info reports no `sub_index` column on an existing row.
+    try {
+      const cols = this.db.prepare(`PRAGMA table_info(fills)`).all() as Array<{ name: string }>;
+      const hasSubIndex = cols.some((c) => c.name === 'sub_index');
+      if (!hasSubIndex && cols.length > 0) {
+        this.db.exec(`
+          BEGIN;
+          ALTER TABLE fills RENAME TO fills_old;
+          CREATE TABLE fills (
+            signature TEXT NOT NULL,
+            sub_index INTEGER NOT NULL DEFAULT 0,
+            wallet TEXT NOT NULL,
+            market TEXT NOT NULL,
+            side TEXT NOT NULL CHECK(side IN ('bid','ask')),
+            priceUsd REAL NOT NULL,
+            sizeBase REAL NOT NULL,
+            notionalUsd REAL NOT NULL,
+            isMaker INTEGER NOT NULL,
+            feeUsd REAL NOT NULL DEFAULT 0,
+            blockTime INTEGER NOT NULL,
+            slot INTEGER NOT NULL,
+            PRIMARY KEY (signature, sub_index)
+          );
+          INSERT INTO fills (signature, sub_index, wallet, market, side, priceUsd, sizeBase, notionalUsd, isMaker, feeUsd, blockTime, slot)
+            SELECT signature, 0, wallet, market, side, priceUsd, sizeBase, notionalUsd, isMaker, feeUsd, blockTime, slot FROM fills_old;
+          DROP TABLE fills_old;
+          CREATE INDEX IF NOT EXISTS fills_wallet_market_time ON fills(wallet, market, blockTime DESC);
+          CREATE INDEX IF NOT EXISTS fills_wallet_time ON fills(wallet, blockTime DESC);
+          COMMIT;
+        `);
+      }
+    } catch {
+      // Best-effort migration — if it fails the new CREATE TABLE IF NOT EXISTS
+      // above still applies to fresh dbs. Old data is preserved as-is.
+    }
   }
 
-  insertFill(f: JournalFill): boolean {
+  /**
+   * Insert a fill. `subIndex` distinguishes multiple fills emitted within the
+   * same transaction (Phoenix can fill against many resting orders in one ix).
+   * Defaults to 0 for callers that have only one fill per tx.
+   */
+  insertFill(f: JournalFill, subIndex: number = 0): boolean {
     const stmt = this.db.prepare(`
-      INSERT OR IGNORE INTO fills (signature, wallet, market, side, priceUsd, sizeBase, notionalUsd, isMaker, feeUsd, blockTime, slot)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT OR IGNORE INTO fills (signature, sub_index, wallet, market, side, priceUsd, sizeBase, notionalUsd, isMaker, feeUsd, blockTime, slot)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
-    const r = stmt.run(f.signature, f.wallet, f.market, f.side, f.priceUsd, f.sizeBase, f.notionalUsd, f.isMaker, f.feeUsd, f.blockTime, f.slot);
+    const r = stmt.run(f.signature, subIndex, f.wallet, f.market, f.side, f.priceUsd, f.sizeBase, f.notionalUsd, f.isMaker, f.feeUsd, f.blockTime, f.slot);
     return r.changes > 0;
   }
 
@@ -324,6 +367,11 @@ async function processTx(connection: Connection, signature: string, walletStr: s
     const ptx = await Phoenix.getPhoenixEventsFromTransactionSignature(connection, signature);
     const phoenix = getPhoenixClient();
     const client = await phoenix.raw();
+    // Per-tx sub_index — distinguishes multiple fill events within the same
+    // signature when persisted (journal composite PK is (signature, sub_index)).
+    // Using a SINGLE counter across all ixs in the tx so it's globally unique
+    // within the signature scope, matching the maker.ts/multi-maker.ts pattern.
+    let subIndex = 0;
     for (const ix of ptx.instructions) {
       const marketAddr = ix.header?.market?.toBase58();
       if (!marketAddr) continue;
@@ -371,8 +419,9 @@ async function processTx(connection: Connection, signature: string, walletStr: s
           priceUsd, sizeBase, notionalUsd: notional, isMaker: isMaker ? 1 : 0,
           feeUsd: isMaker ? 0 : feeUsd,
           blockTime, slot,
-        });
+        }, subIndex);
         if (ok) inserted++;
+        subIndex++;
       }
     }
   } catch (e) {

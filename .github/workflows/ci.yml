@@ -6,10 +6,25 @@ on:
   pull_request:
     branches: [main]
 
+# Cancel in-flight runs on the same ref when a new push lands
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Default to least privilege; specific jobs can elevate if needed
+permissions:
+  contents: read
+
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # engines.node says >=20 — both must work
+        node-version: ['20', '22']
 
     env:
       # Force paper mode during CI so no on-chain action can happen even if
@@ -21,10 +36,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Setup Node.js
+      - name: Setup Node.js ${{ matrix.node-version }}
         uses: actions/setup-node@v6
         with:
-          node-version: '22'
+          node-version: ${{ matrix.node-version }}
           cache: 'npm'
 
       - name: Install dependencies
@@ -32,6 +47,9 @@ jobs:
 
       - name: Typecheck
         run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
 
       - name: Unit tests
         run: npm test

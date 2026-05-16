@@ -28,6 +28,7 @@ export function colorSide(side: string): string {
 }
 
 export function pad(s: string, width: number, align: 'left' | 'right' = 'left'): string {
+  // eslint-disable-next-line no-control-regex -- intentional ANSI escape stripping for width math
   const visible = s.replace(/\x1b\[[0-9;]*m/g, '');
   const gap = Math.max(0, width - visible.length);
   return align === 'right' ? ' '.repeat(gap) + s : s + ' '.repeat(gap);

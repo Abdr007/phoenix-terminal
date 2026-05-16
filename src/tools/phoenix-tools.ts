@@ -4,7 +4,7 @@ import { getPhoenixClient } from '../phoenix/client.js';
 import { fetchOrderbook } from '../phoenix/orderbook.js';
 import { placeLimit, placeIoc, cancelAll, getOpenOrders } from '../phoenix/orders.js';
 import { findMarket, MARKETS } from '../phoenix/markets.js';
-import { scanArb, executeArbCycle, ExecuteArbResult } from '../phoenix/arb.js';
+import { scanArb, executeArbCycle } from '../phoenix/arb.js';
 import { Watcher } from '../phoenix/watcher.js';
 import { Maker, DEFAULT_MAKER } from '../phoenix/maker.js';
 import { MultiMarketMaker, DEFAULT_MULTI_MAKER } from '../phoenix/multi-maker.js';

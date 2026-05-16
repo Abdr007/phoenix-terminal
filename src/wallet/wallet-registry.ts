@@ -45,7 +45,7 @@ export function discoverWallets(): WalletEntry[] {
   const out: WalletEntry[] = [];
   for (const dir of SCAN_DIRS) {
     if (!existsSync(dir)) continue;
-    let files: string[] = [];
+    let files: string[];
     try { files = readdirSync(dir); } catch { continue; }
     for (const f of files) {
       if (!f.endsWith('.json')) continue;

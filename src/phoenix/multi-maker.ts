@@ -159,11 +159,8 @@ export class MultiMarketMaker {
     if (!this.running) return;
     this.running = false;
     if (this.timer) { clearInterval(this.timer); this.timer = null; }
-    if (this.logSubId !== null) {
-      try { await this.connection.removeOnLogsListener(this.logSubId); } catch { /* ignore */ }
-      this.logSubId = null;
-    }
-    // Cancel orders on every market
+    // Cancel BEFORE unsubscribing (same reasoning as maker.ts — fills from
+    // the cancel itself should be attributed to us before we stop listening).
     for (const m of this.markets) {
       try {
         await cancelAll(this.connection, this.signer, m.symbol);
@@ -171,6 +168,10 @@ export class MultiMarketMaker {
       } catch (e) {
         getLogger().warn('mm-multi', `final cancel-all on ${m.symbol} failed: ${(e as Error).message}`);
       }
+    }
+    if (this.logSubId !== null) {
+      try { await this.connection.removeOnLogsListener(this.logSubId); } catch { /* ignore */ }
+      this.logSubId = null;
     }
     getLogger().info('mm-multi', 'Multi-maker stopped — open orders cancelled');
   }
@@ -317,6 +318,9 @@ export class MultiMarketMaker {
       const client = await phoenix.raw();
       const walletStr = this.signer.publicKey.toBase58();
 
+      // Per-tx counter — disambiguates multiple fills in the same signature
+      // when persisted to the journal (composite PK on (signature, sub_index)).
+      let subIndex = 0;
       for (const ix of ptx.instructions) {
         const marketAddr = ix.header?.market?.toBase58();
         if (!marketAddr) continue;
@@ -369,14 +373,15 @@ export class MultiMarketMaker {
             `${this.stats.fills} fills\n`,
           );
 
-          // Persist
+          // Persist (composite PK keeps multi-fill same-tx events distinct)
           try {
             getJournal().insertFill({
               signature, wallet: walletStr, market: def.symbol, side,
               priceUsd, sizeBase, notionalUsd: notional, isMaker: 1, feeUsd: 0,
               blockTime: Math.floor(Date.now() / 1000), slot: 0,
-            });
+            }, subIndex);
           } catch { /* journal optional */ }
+          subIndex++;
           // Notification
           getNotifier().notify({
             kind: 'fill', severity: 'success',
