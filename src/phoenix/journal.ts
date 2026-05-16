@@ -394,3 +394,11 @@ export function getJournal(): Journal {
   if (!_journal) _journal = new Journal();
   return _journal;
 }
+
+/** Close the singleton journal (called on graceful shutdown). Safe to call when uninitialized. */
+export function closeJournal(): void {
+  if (_journal) {
+    try { _journal.close(); } catch { /* ignore */ }
+    _journal = null;
+  }
+}

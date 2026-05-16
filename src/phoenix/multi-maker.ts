@@ -339,8 +339,10 @@ export class MultiMarketMaker {
             marketAddr,
           );
           const notional = priceUsd * sizeBase;
+          // Canonical Phoenix side detection — see maker.ts for explanation
+          const dir = Phoenix.sign(Phoenix.toBN(f.orderSequenceNumber).fromTwos(64));
+          const side: 'bid' | 'ask' = dir < 0 ? 'bid' : 'ask';
           const mid = this.stats.mids.get(def.symbol) ?? priceUsd;
-          const side: 'bid' | 'ask' = priceUsd > mid ? 'ask' : 'bid';
           const edgePerUnit = Math.abs(priceUsd - mid);
 
           this.stats.fills++;

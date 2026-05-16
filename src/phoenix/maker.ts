@@ -19,7 +19,7 @@
 import { Connection, Keypair } from '@solana/web3.js';
 import * as Phoenix from '@ellipsis-labs/phoenix-sdk';
 import { getPhoenixClient } from './client.js';
-import { placeLimit, cancelAll, getOpenOrders } from './orders.js';
+import { placeLimit, cancelAll } from './orders.js';
 import { getJournal } from './journal.js';
 import { fetchPythPrice } from './oracle.js';
 import { findMarket } from './markets.js';
@@ -162,7 +162,6 @@ export class Maker {
       const ptx = await Phoenix.getPhoenixEventsFromTransactionSignature(this.connection, signature);
       const walletStr = this.signer.publicKey.toBase58();
       let attributed = false;
-      let attributedFee = 0;
 
       for (const ix of ptx.instructions) {
         const marketAddr = ix.header?.market?.toBase58();
@@ -192,9 +191,14 @@ export class Maker {
           );
           const notional = priceUsd * sizeBase;
 
-          // Infer side by comparing fill price to last-known mid
+          // Maker side — canonical Phoenix pattern from SDK example fillListener.ts:
+          //   Bid orders are stored with twos-complement-negated seqNums (so they
+          //   sort descending when read as u64). Ask orders use ascending seqNums.
+          //   sign(seqNum.fromTwos(64)) > 0 → ask maker, < 0 → bid maker.
+          const dir = Phoenix.sign(Phoenix.toBN(f.orderSequenceNumber).fromTwos(64));
+          const side: 'bid' | 'ask' = dir < 0 ? 'bid' : 'ask';
+          // Edge proxy vs last-known mid (best available; lastMid may be a few seconds stale)
           const mid = this.stats.lastMid ?? priceUsd;
-          const side: 'bid' | 'ask' = priceUsd > mid ? 'ask' : 'bid';
           const edgePerUnit = Math.abs(priceUsd - mid);
 
           this.stats.fills++;
@@ -229,12 +233,11 @@ export class Maker {
             link: { label: 'view on Solscan', url: txLink(signature) },
           });
         }
-        if (attributed && totalFeeLots > 0) {
-          // Maker doesn't pay the taker fee in Phoenix; tracked for completeness
-          attributedFee += client.quoteAtomsToQuoteUnits(client.quoteLotsToQuoteAtoms(totalFeeLots, marketAddr), marketAddr);
-        }
+        // Note: maker doesn't pay the taker fee in Phoenix; totalFeeLots is
+        // informational only. We intentionally do not aggregate it into stats
+        // since it isn't our cost — it's the taker's.
+        void totalFeeLots;
       }
-      void attributedFee;
       if (attributed) {
         process.stdout.write(
           `\n${theme.muted('[mm fill]')} ${theme.success('●')} ` +
@@ -367,17 +370,9 @@ export class Maker {
     }
     // Brief pause so the signing-guard rate limiter doesn't reject the follow-on places
     await new Promise((r) => setTimeout(r, 300));
+    if (!this.running) return; // bail if stop() was called while we slept
 
-    // 2) Update inventory from on-chain open orders (best-effort)
-    try {
-      const open = await getOpenOrders(this.cfg.symbol, this.signer.publicKey);
-      // We don't track positions on Phoenix (it's a spot CLOB), so inventory is
-      // approximated from the diff of base-token balance change at session start.
-      // For now we keep this.stats.inventoryBase as caller's running estimate.
-      void open;
-    } catch { /* ignore */ }
-
-    // 3) Place new quotes SEQUENTIALLY so the per-order rate limiter doesn't reject the second one.
+    // 2) Place new quotes SEQUENTIALLY so the per-order rate limiter doesn't reject the second one.
     if (!skipBid) {
       try {
         await placeLimit(this.connection, this.signer, {
@@ -392,6 +387,7 @@ export class Maker {
         getLogger().warn('mm', `bid place failed: ${(e as Error).message}`);
       }
       await new Promise((r) => setTimeout(r, 250));
+      if (!this.running) return; // bail if stop() was called between bid and ask
     }
     if (!skipAsk) {
       try {

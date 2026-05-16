@@ -8,6 +8,7 @@ import { initRpcManager } from '../network/rpc-manager.js';
 import { WalletManager } from '../wallet/walletManager.js';
 import { initSigningGuard } from '../security/signing-guard.js';
 import { initPhoenixClient } from '../phoenix/client.js';
+import { closeJournal } from '../phoenix/journal.js';
 import { initAiInterpreter, getAiInterpreter } from '../ai/interpreter.js';
 import { loadConfig } from '../config/index.js';
 import { PHOENIX_BANNER, theme } from './theme.js';
@@ -175,7 +176,9 @@ export async function runTerminal(): Promise<void> {
     if (ctx.activeMaker) await ctx.activeMaker.stop();
     if (ctx.activeMultiMaker) await ctx.activeMultiMaker.stop();
     if (ctx.activeWatcher) await ctx.activeWatcher.stop();
+    try { await ctx.wallet.disconnect(); } catch { /* ignore */ }
     rpc.stopMonitor();
+    closeJournal();
     process.exit(0);
   });
 }
