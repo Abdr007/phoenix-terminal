@@ -1,62 +1,85 @@
-<svg viewBox="0 0 1280 380" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="phoenix-terminal — interactive trading terminal for the Phoenix CLOB on Solana">
+<svg viewBox="0 0 1280 400" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="phoenix-terminal — interactive trading terminal for the Phoenix CLOB on Solana">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#0a0a0a"/>
-      <stop offset="55%" stop-color="#13100a"/>
-      <stop offset="100%" stop-color="#1f1308"/>
+      <stop offset="0%"  stop-color="#070707"/>
+      <stop offset="60%" stop-color="#100c08"/>
+      <stop offset="100%" stop-color="#1c1107"/>
     </linearGradient>
     <linearGradient id="ember" x1="0" y1="1" x2="0" y2="0">
       <stop offset="0%"  stop-color="#FF4B1F"/>
       <stop offset="55%" stop-color="#FF6B35"/>
       <stop offset="100%" stop-color="#FFB627"/>
     </linearGradient>
-    <linearGradient id="emberFaint" x1="0" y1="1" x2="0" y2="0">
-      <stop offset="0%"   stop-color="#FF6B35" stop-opacity="0.18"/>
-      <stop offset="100%" stop-color="#FFB627" stop-opacity="0.05"/>
-    </linearGradient>
-    <filter id="glow" x="-10%" y="-10%" width="120%" height="120%">
-      <feGaussianBlur in="SourceGraphic" stdDeviation="2.2"/>
+    <radialGradient id="glow" cx="50%" cy="55%" r="55%">
+      <stop offset="0%"  stop-color="#FF6B35" stop-opacity="0.22"/>
+      <stop offset="60%" stop-color="#FF6B35" stop-opacity="0.05"/>
+      <stop offset="100%" stop-color="#FF6B35" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="softGlow" x="-15%" y="-15%" width="130%" height="130%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="6"/>
     </filter>
   </defs>
 
-  <!-- Dark background -->
-  <rect width="1280" height="380" fill="url(#bg)"/>
+  <!-- Background -->
+  <rect width="1280" height="400" fill="url(#bg)"/>
+  <rect width="1280" height="400" fill="url(#glow)"/>
 
-  <!-- Subtle radial ember glow behind the text -->
-  <ellipse cx="640" cy="200" rx="700" ry="200" fill="url(#emberFaint)"/>
-
-  <!-- Terminal corner brackets (top-left, top-right, bottom-left, bottom-right) -->
-  <g stroke="#FF6B35" stroke-width="2.5" fill="none" opacity="0.65">
-    <path d="M 32 32 L 32 64 M 32 32 L 64 32"/>
-    <path d="M 1248 32 L 1248 64 M 1248 32 L 1216 32"/>
-    <path d="M 32 348 L 32 316 M 32 348 L 64 348"/>
-    <path d="M 1248 348 L 1248 316 M 1248 348 L 1216 348"/>
+  <!-- Terminal viewport corner brackets -->
+  <g stroke="#FF6B35" stroke-width="3" fill="none" opacity="0.55" stroke-linecap="round">
+    <path d="M 36 36 L 36 76  M 36 36 L 76 36"/>
+    <path d="M 1244 36 L 1244 76  M 1244 36 L 1204 36"/>
+    <path d="M 36 364 L 36 324  M 36 364 L 76 364"/>
+    <path d="M 1244 364 L 1244 324  M 1244 364 L 1204 364"/>
   </g>
 
-  <!-- ASCII Phoenix banner, rendered as monospace SVG text with the ember gradient -->
-  <g font-family="'SF Mono', 'Menlo', 'Monaco', 'Courier New', monospace" font-weight="bold" font-size="26" fill="url(#ember)">
-    <text x="190" y="100">  ____  _                      _</text>
-    <text x="190" y="132"> |  _ \| |__   ___   ___ _ __ (_)_  __</text>
-    <text x="190" y="164"> | |_) | '_ \ / _ \ / _ \ '_ \| \ \/ /</text>
-    <text x="190" y="196"> |  __/| | | | (_) |  __/ | | | |&gt;  &lt;</text>
-    <text x="190" y="228"> |_|   |_| |_|\___/ \___|_| |_|_/_/\_\</text>
+  <!-- Flame mark, vertically centered on the left -->
+  <g transform="translate(190 200)">
+    <!-- Soft glow behind flame -->
+    <ellipse cx="0" cy="0" rx="90" ry="120" fill="url(#ember)" opacity="0.18" filter="url(#softGlow)"/>
+    <!-- Outer flame silhouette -->
+    <path d="M 0 -110
+             C 50 -70, 78 -28, 78 12
+             C 78 60, 42 96, 0 102
+             C -42 96, -78 60, -78 12
+             C -78 -28, -50 -70, 0 -110 Z"
+          fill="url(#ember)"/>
+    <!-- Inner cutout (the flame channel) -->
+    <path d="M 0 -56
+             C 28 -32, 44 -10, 44 12
+             C 44 36, 22 56, 0 58
+             C -22 56, -44 36, -44 12
+             C -44 -10, -28 -32, 0 -56 Z"
+          fill="#0a0805"/>
+    <!-- Inner ember dot -->
+    <circle cx="0" cy="16" r="14" fill="url(#ember)"/>
   </g>
 
-  <!-- Soft glow accent layer for the banner -->
-  <g font-family="'SF Mono', 'Menlo', 'Monaco', 'Courier New', monospace" font-weight="bold" font-size="26" fill="#FF6B35" opacity="0.35" filter="url(#glow)">
-    <text x="190" y="100">  ____  _                      _</text>
-    <text x="190" y="132"> |  _ \| |__   ___   ___ _ __ (_)_  __</text>
-    <text x="190" y="164"> | |_) | '_ \ / _ \ / _ \ '_ \| \ \/ /</text>
-    <text x="190" y="196"> |  __/| | | | (_) |  __/ | | | |&gt;  &lt;</text>
-    <text x="190" y="228"> |_|   |_| |_|\___/ \___|_| |_|_/_/\_\</text>
-  </g>
+  <!-- Wordmark — PHOENIX in ember -->
+  <text x="340" y="200"
+        font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', Helvetica, Arial, sans-serif"
+        font-weight="900"
+        font-size="118"
+        fill="url(#ember)"
+        letter-spacing="-3">PHOENIX</text>
 
-  <!-- TERMINAL label between dashes -->
-  <text x="190" y="262" font-family="'SF Mono', 'Menlo', 'Monaco', 'Courier New', monospace" font-size="20" fill="#FFB627" letter-spacing="3">─────────── T E R M I N A L ───────────</text>
+  <!-- TERMINAL subtitle — lighter, wider letter-spacing -->
+  <text x="343" y="252"
+        font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', Helvetica, Arial, sans-serif"
+        font-weight="500"
+        font-size="36"
+        fill="#FFB627"
+        letter-spacing="14">TERMINAL</text>
 
   <!-- Tagline -->
-  <text x="190" y="308" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="20" fill="#B8C1BB">Interactive trading terminal for the Phoenix CLOB on Solana</text>
+  <text x="340" y="304"
+        font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif"
+        font-size="22"
+        fill="#B8C1BB">Interactive trading terminal for the Phoenix CLOB on Solana</text>
 
-  <!-- Stats line -->
-  <text x="190" y="338" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" fill="#6B7B73" letter-spacing="0.6">40 commands  ·  inventory-aware MM  ·  WAC PnL journal  ·  Jito bundles  ·  Claude-powered CLI</text>
+  <!-- Stats strip -->
+  <text x="340" y="340"
+        font-family="'SF Mono', 'Menlo', 'Monaco', 'Courier New', monospace"
+        font-size="14"
+        fill="#6B7B73"
+        letter-spacing="0.5">40 commands  ·  inventory-aware MM  ·  WAC PnL journal  ·  Jito bundles  ·  Claude-powered CLI</text>
 </svg>
