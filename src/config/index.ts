@@ -88,10 +88,16 @@ export function loadConfig(): PhoenixConfig {
     network,
     walletPath: expandHome(safeEnvString('WALLET_PATH', '~/.config/solana/id.json')),
     simulationMode: safeEnvBool('SIMULATION_MODE', true),
-    tradingEnabled: safeEnvBool('TRADING_ENABLED', true),
+    // NOTE: `tradingEnabled` is exposed for backwards-compat but is NOT
+    // enforced anywhere. The runtime gate is `simulationMode`, toggled via
+    // the `mode` command. Always reports true so the displayed config
+    // doesn't lie about a non-existent kill switch.
+    tradingEnabled: true,
     computeUnitLimit: safeEnvNumber('COMPUTE_UNIT_LIMIT', 400_000),
     computeUnitPrice: safeEnvNumber('COMPUTE_UNIT_PRICE', 100_000),
-    maxNotionalPerOrder: safeEnvNumber('MAX_NOTIONAL_PER_ORDER', 0),
+    // Safer default: cap each order at $10,000 notional out of the box.
+    // Set MAX_NOTIONAL_PER_ORDER=0 to opt back into unlimited.
+    maxNotionalPerOrder: safeEnvNumber('MAX_NOTIONAL_PER_ORDER', 10_000),
     maxOrdersPerMinute: safeEnvNumber('MAX_ORDERS_PER_MINUTE', 20),
     minDelayBetweenOrdersMs: safeEnvNumber('MIN_DELAY_BETWEEN_ORDERS_MS', 500),
   };

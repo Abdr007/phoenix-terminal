@@ -56,7 +56,8 @@ export async function deposit(connection: Connection, signer: Keypair, args: Dep
   if ((args.baseUnits ?? 0) <= 0 && (args.quoteUnits ?? 0) <= 0) {
     throw new Error('deposit: must specify baseUnits and/or quoteUnits > 0');
   }
-  getSigningGuard().reserveSlot();
+  const rate = getSigningGuard().reserveSlot();
+  if (!rate.allowed) throw new Error(rate.reason);
 
   const phoenix = getPhoenixClient();
   const { def, state } = await phoenix.getMarket(args.symbol);
@@ -89,7 +90,8 @@ export interface WithdrawArgs {
 }
 
 export async function withdraw(connection: Connection, signer: Keypair, args: WithdrawArgs): Promise<string> {
-  getSigningGuard().reserveSlot();
+  const rate = getSigningGuard().reserveSlot();
+  if (!rate.allowed) throw new Error(rate.reason);
 
   const phoenix = getPhoenixClient();
   const { def, state } = await phoenix.getMarket(args.symbol);

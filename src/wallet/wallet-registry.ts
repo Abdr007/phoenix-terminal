@@ -69,6 +69,14 @@ export function resolveWallet(identifier: string): WalletEntry | null {
   // Direct path?
   if (id.includes('/') || id.startsWith('~')) {
     const path = id.startsWith('~') ? id.replace(/^~/, homedir()) : resolvePath(id);
+    // Path traversal restriction — match walletManager.loadFromFile policy:
+    // user-supplied paths must resolve under $HOME.
+    const home = homedir();
+    const homePrefix = home.endsWith('/') ? home : home + '/';
+    if (path !== home && !path.startsWith(homePrefix)) {
+      getLogger().debug('wallet-registry', `refused out-of-home path: ${path}`);
+      return null;
+    }
     if (existsSync(path)) {
       const address = tryLoadPubkey(path);
       if (address) return { name: id.split('/').pop()?.replace(/\.json$/, '') ?? 'custom', path, address };
@@ -80,9 +88,12 @@ export function resolveWallet(identifier: string): WalletEntry | null {
   const lower = id.toLowerCase();
   const byName = wallets.find((w) => w.name.toLowerCase() === lower);
   if (byName) return byName;
-  // Address-prefix match (case-insensitive)
-  const byAddr = wallets.find((w) => w.address.toLowerCase().startsWith(lower));
-  if (byAddr) return byAddr;
+  // Address-prefix match (case-insensitive) — require at least 4 chars to avoid
+  // accidental matches like `a` matching half the wallets.
+  if (lower.length >= 4) {
+    const byAddr = wallets.find((w) => w.address.toLowerCase().startsWith(lower));
+    if (byAddr) return byAddr;
+  }
   getLogger().debug('wallet-registry', `no wallet matches "${identifier}"`);
   return null;
 }

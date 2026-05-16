@@ -61,6 +61,9 @@ export class Watcher {
 
   private wallet: PublicKey | null;
   private signer: Keypair | null;
+  /** Live-mode check — called at hotkey fire-time, NOT cached, so a
+   *  runtime `mode live` toggle is respected without restarting the watcher. */
+  private isLiveMode: () => boolean = () => false;
 
   // ─── Hotkey state ──────────────────────────────────────────────────────────
   private focusedIdx = 0;
@@ -70,11 +73,18 @@ export class Watcher {
   private flash: { msg: string; until: number } | null = null;
   private keypressHandler: ((str: string | undefined, key: { name?: string; sequence?: string; ctrl?: boolean }) => void) | null = null;
 
-  constructor(connection: Connection, markets: MarketDef[], wallet: PublicKey | null = null, signer: Keypair | null = null) {
+  constructor(
+    connection: Connection,
+    markets: MarketDef[],
+    wallet: PublicKey | null = null,
+    signer: Keypair | null = null,
+    isLiveMode: () => boolean = () => false,
+  ) {
     this.connection = connection;
     this.markets = markets;
     this.wallet = wallet;
     this.signer = signer;
+    this.isLiveMode = isLiveMode;
     for (const m of markets) {
       this.snaps.set(m.address, {
         def: m, bestBid: null, bestAsk: null, mid: null, spreadBps: null,
@@ -91,6 +101,10 @@ export class Watcher {
   private async fireBid(): Promise<void> {
     if (!this.signer || !this.armed) {
       this.setFlash(this.armed ? 'no signer wallet' : 'not armed — press SPACE to arm', 2500);
+      return;
+    }
+    if (!this.isLiveMode()) {
+      this.setFlash('paper mode — hotkey blocked (use "mode live" first)', 3000);
       return;
     }
     const def = this.markets[this.focusedIdx];
@@ -113,6 +127,10 @@ export class Watcher {
       this.setFlash(this.armed ? 'no signer wallet' : 'not armed — press SPACE to arm', 2500);
       return;
     }
+    if (!this.isLiveMode()) {
+      this.setFlash('paper mode — hotkey blocked (use "mode live" first)', 3000);
+      return;
+    }
     const def = this.markets[this.focusedIdx];
     const snap = this.snaps.get(def.address);
     if (!snap?.bestAsk) { this.setFlash('no ask available', 2000); return; }
@@ -131,6 +149,10 @@ export class Watcher {
   private async fireCancelAll(): Promise<void> {
     if (!this.signer || !this.armed) {
       this.setFlash(this.armed ? 'no signer wallet' : 'not armed — press SPACE to arm', 2500);
+      return;
+    }
+    if (!this.isLiveMode()) {
+      this.setFlash('paper mode — hotkey blocked (use "mode live" first)', 3000);
       return;
     }
     const def = this.markets[this.focusedIdx];

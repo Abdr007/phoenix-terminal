@@ -25,8 +25,26 @@ export interface AiTranslation {
   clarificationNeeded: string | null; // a question to ask the user when ambiguous
 }
 
+// ANY command that signs a transaction or changes mode/wallet must re-confirm
+// when arrived-at via the AI translator. Default-deny — list everything that
+// touches state, including non-obvious paths like `evict`, `claim-seat`,
+// `free-funds`, and the multi-* variants.
 const DESTRUCTIVE_COMMANDS = new Set([
-  'buy', 'sell', 'cancel', 'mm', 'ladder', 'deposit', 'withdraw',
+  // Trading
+  'buy', 'sell', 'cancel', 'cancel-id', 'cancel-top', 'reduce',
+  'ladder',
+  // Arbitrage that signs
+  'arb',
+  // Market making
+  'mm', 'mm-start', 'mm-stop', 'mm-multi',
+  // Fund movement
+  'deposit', 'withdraw', 'free-funds',
+  // Seat operations
+  'claim-seat', 'evict', 'evict-check',
+  // Mode + wallet changes (silent live-flip is the worst injection path)
+  'mode', 'wallet',
+  // AI advisor that might suggest signing — gate the auto-execute
+  'advise', 'advisor',
 ]);
 
 function buildSystemPrompt(tools: ToolDef[]): string {

@@ -129,6 +129,14 @@ class GenericWebhookChannel implements Channel {
 export class Notifier {
   private channels: Channel[] = [];
   private minSeverity: NotifySeverity;
+  // Rate-limit: token bucket per channel × kind. Default 1 msg / 2s per kind,
+  // 30 msg per minute aggregate per channel. A busy MM with 100 fills/min must
+  // not spam Discord/Slack into a webhook ban.
+  private lastSentByChannelKind = new Map<string, number>();
+  private sentTimesByChannel = new Map<string, number[]>();
+  private dropped = 0;
+  private readonly minIntervalMs = 2_000;
+  private readonly burstPerMinute = 30;
 
   constructor() {
     const discord = safeEnvString('DISCORD_WEBHOOK_URL', '');
@@ -145,13 +153,38 @@ export class Notifier {
 
   get configured(): boolean { return this.channels.length > 0; }
   get channelNames(): string[] { return this.channels.map((c) => c.name); }
+  get droppedCount(): number { return this.dropped; }
+
+  /** Returns true if the channel may send this event NOW; updates state if yes. */
+  private allow(channel: string, kind: string): boolean {
+    const now = Date.now();
+    // Per-kind cooldown
+    const key = `${channel}|${kind}`;
+    const last = this.lastSentByChannelKind.get(key) ?? 0;
+    if (now - last < this.minIntervalMs) return false;
+    // Per-minute burst cap
+    const times = this.sentTimesByChannel.get(channel) ?? [];
+    const recent = times.filter((t) => now - t < 60_000);
+    if (recent.length >= this.burstPerMinute) {
+      this.sentTimesByChannel.set(channel, recent);
+      return false;
+    }
+    recent.push(now);
+    this.sentTimesByChannel.set(channel, recent);
+    this.lastSentByChannelKind.set(key, now);
+    return true;
+  }
 
   /** Fire-and-forget. Returns immediately. */
   notify(e: NotifyEvent): void {
     if (this.channels.length === 0) return;
     if (!this.meetsSeverity(e.severity)) return;
     for (const ch of this.channels) {
-      // Detach: don't await, don't crash on rejection
+      // Always pass through errors/warnings; only rate-limit info/success
+      if (e.severity !== 'error' && e.severity !== 'warning' && !this.allow(ch.name, e.kind)) {
+        this.dropped++;
+        continue;
+      }
       ch.send(e).catch((err) => getLogger().debug('notifier', `${ch.name} send: ${(err as Error).message}`));
     }
   }

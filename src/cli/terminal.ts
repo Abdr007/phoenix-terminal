@@ -150,16 +150,29 @@ export async function runTerminal(): Promise<void> {
     try { appendFileSync(historyPath, line + '\n'); } catch { /* ignore */ }
     try {
       // Support `&&`-joined multi-step prompts (e.g. "mode live && wallet use dvv")
+      // BUT refuse chains that contain destructive segments — one-line
+      // `mode live && buy SOL 1 --ioc` chains are too easy to fat-finger and
+      // too dangerous to allow without an explicit second confirmation.
       const segments = line.split('&&').map((s) => s.trim()).filter(Boolean);
-      for (const seg of segments) {
-        const firstWord = seg.split(/\s+/)[0];
-        const looksLikeCommand = engine.has(firstWord);
-        let resolved = seg;
-        if (!looksLikeCommand && getAiInterpreter()) {
-          resolved = `ai ${seg}`;
+      const DESTRUCTIVE_HEADS = new Set([
+        'buy','sell','cancel','cancel-id','cancel-top','reduce','ladder','arb',
+        'mm','mm-start','mm-stop','mm-multi','deposit','withdraw','free-funds',
+        'claim-seat','evict','mode','wallet',
+      ]);
+      const hasDestructive = segments.some((s) => DESTRUCTIVE_HEADS.has(s.split(/\s+/)[0]));
+      if (segments.length > 1 && hasDestructive) {
+        console.log(renderError('chained "&&" commands are not allowed when any segment is destructive. Run them one at a time.'));
+      } else {
+        for (const seg of segments) {
+          const firstWord = seg.split(/\s+/)[0];
+          const looksLikeCommand = engine.has(firstWord);
+          let resolved = seg;
+          if (!looksLikeCommand && getAiInterpreter()) {
+            resolved = `ai ${seg}`;
+          }
+          const result = await engine.run(resolved);
+          if (result) console.log(result);
         }
-        const result = await engine.run(resolved);
-        if (result) console.log(result);
       }
     } catch (e) {
       console.log(renderError((e as Error).message));

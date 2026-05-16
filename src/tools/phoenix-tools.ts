@@ -308,7 +308,13 @@ export function registerPhoenixTools(engine: ToolEngine, ctx: AppCtx): void {
       if (markets.length === 0) return renderError('no valid markets to watch');
       // Pass wallet + signer so the watcher can render Open Orders + handle hotkeys
       const signer = ctx.wallet.isConnected ? ctx.wallet.getKeypair() : null;
-      ctx.activeWatcher = new Watcher(ctx.rpc.connection, markets, ctx.wallet.getPublicKey(), signer);
+      ctx.activeWatcher = new Watcher(
+        ctx.rpc.connection,
+        markets,
+        ctx.wallet.getPublicKey(),
+        signer,
+        () => !ctx.simulationMode, // hotkeys check this at fire-time
+      );
       await ctx.activeWatcher.start();
       // Block until SIGINT OR a hotkey-issued quit
       await new Promise<void>((resolve) => {
@@ -819,7 +825,11 @@ export function registerPhoenixTools(engine: ToolEngine, ctx: AppCtx): void {
         if (t.isDestructive) {
           return [header, renderWarn('destructive command — re-run it explicitly to confirm:'), `  ${theme.highlight(t.command)}`].join('\n');
         }
-        // Low-confidence safe commands: still surface the warning but execute
+        // Low-confidence safe commands: also re-prompt rather than execute on a guess.
+        // Only HIGH confidence non-destructive commands auto-execute.
+        if (t.confidence === 'low') {
+          return [header, renderWarn('low-confidence translation — re-run explicitly to confirm:'), `  ${theme.highlight(t.command)}`].join('\n');
+        }
         const result = await engine.run(t.command);
         return result ? `${header}\n\n${result}` : header;
       } catch (e) {
