@@ -67,3 +67,78 @@ describe('audit fix: tip lamports cannot be below Jito minimum', () => {
     expect(() => tipInstruction(kp.publicKey, 1000)).not.toThrow();
   });
 });
+
+describe('audit fix: WAC PnL handles zero-crossings', () => {
+  const mkFill = (side: 'bid' | 'ask', size: number, price: number, t = 0) => ({
+    signature: `sig-${t}-${side}-${size}-${price}`,
+    wallet: 'W',
+    market: 'TEST/USDC',
+    side,
+    priceUsd: price,
+    sizeBase: size,
+    notionalUsd: size * price,
+    isMaker: 0,
+    feeUsd: 0,
+    blockTime: t,
+    slot: 0,
+  });
+
+  it('short → long crossover realizes the short cover correctly', async () => {
+    const { computeMarketPnl } = await import('../src/phoenix/journal.js');
+    // Sell 5 @ 100 → short 5 with avgCost = 100
+    // Buy 10 @ 80 → cover 5 (realize +100), then go long 5 @ 80
+    const m = computeMarketPnl('TEST/USDC', [
+      mkFill('ask', 5, 100, 1),
+      mkFill('bid', 10, 80, 2),
+    ]);
+    expect(m.realizedPnlUsd).toBeCloseTo(100, 4); // (100 - 80) * 5
+    expect(m.inventoryBase).toBeCloseTo(5, 6);
+    expect(m.avgCostUsd).toBeCloseTo(80, 4); // new long basis = bid price
+  });
+
+  it('long → short crossover realizes the long sell correctly', async () => {
+    const { computeMarketPnl } = await import('../src/phoenix/journal.js');
+    // Buy 5 @ 100 → long 5 with avgCost = 100
+    // Sell 10 @ 120 → reduce 5 (realize +100), then go short 5 @ 120
+    const m = computeMarketPnl('TEST/USDC', [
+      mkFill('bid', 5, 100, 1),
+      mkFill('ask', 10, 120, 2),
+    ]);
+    expect(m.realizedPnlUsd).toBeCloseTo(100, 4); // (120 - 100) * 5
+    expect(m.inventoryBase).toBeCloseTo(-5, 6);
+    expect(m.avgCostUsd).toBeCloseTo(120, 4); // new short basis = ask price
+  });
+
+  it('extending a short uses weighted-average basis (not last-trade price)', async () => {
+    const { computeMarketPnl } = await import('../src/phoenix/journal.js');
+    // Sell 5 @ 100, then sell 5 more @ 80 → avgCost = (5×100 + 5×80) / 10 = 90
+    const m = computeMarketPnl('TEST/USDC', [
+      mkFill('ask', 5, 100, 1),
+      mkFill('ask', 5, 80, 2),
+    ]);
+    expect(m.realizedPnlUsd).toBeCloseTo(0, 4); // no closes yet
+    expect(m.inventoryBase).toBeCloseTo(-10, 6);
+    expect(m.avgCostUsd).toBeCloseTo(90, 4); // WAC, not 80
+  });
+
+  it('extending a long uses weighted-average basis (regression — already worked)', async () => {
+    const { computeMarketPnl } = await import('../src/phoenix/journal.js');
+    const m = computeMarketPnl('TEST/USDC', [
+      mkFill('bid', 5, 100, 1),
+      mkFill('bid', 5, 120, 2),
+    ]);
+    expect(m.inventoryBase).toBeCloseTo(10, 6);
+    expect(m.avgCostUsd).toBeCloseTo(110, 4);
+  });
+
+  it('closing exactly to flat zeroes avgCost', async () => {
+    const { computeMarketPnl } = await import('../src/phoenix/journal.js');
+    const m = computeMarketPnl('TEST/USDC', [
+      mkFill('bid', 5, 100, 1),
+      mkFill('ask', 5, 110, 2),
+    ]);
+    expect(m.realizedPnlUsd).toBeCloseTo(50, 4);
+    expect(m.inventoryBase).toBeCloseTo(0, 6);
+    expect(m.avgCostUsd).toBe(0);
+  });
+});

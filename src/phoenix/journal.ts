@@ -210,26 +210,64 @@ export function computeMarketPnl(market: string, fills: JournalFill[]): MarketPn
     fees += f.feeUsd;
     if (f.isMaker) makerVol += f.notionalUsd; else takerVol += f.notionalUsd;
 
+    // Correct WAC accounting across all four transitions:
+    //   inv > 0, bid → extending long: WAC update
+    //   inv > 0, ask → reducing long (and possibly crossing into short)
+    //   inv < 0, ask → extending short: WAC update (positive avgCost as proceeds-per-base)
+    //   inv < 0, bid → covering short (and possibly crossing into long)
+    //   inv == 0 → new long (bid) or new short (ask): seed avgCost
     if (f.side === 'bid') {
-      // Bought base
-      const newInv = inv + f.sizeBase;
-      if (newInv > 0.000001) {
-        avgCost = (inv * avgCost + f.sizeBase * f.priceUsd) / newInv;
-      }
-      inv = newInv;
       buyVol += f.sizeBase;
       buyNot += f.notionalUsd;
-    } else {
-      // Sold base — realize against avgCost
-      const reducedSize = Math.min(f.sizeBase, Math.max(inv, 0));
-      realized += (f.priceUsd - avgCost) * reducedSize;
-      inv -= f.sizeBase;
-      // Going short — adjust avgCost as new "short" basis
-      if (inv < 0 && reducedSize < f.sizeBase) {
-        avgCost = f.priceUsd;
+      if (inv < 0) {
+        // Covering short
+        const coverSize = Math.min(f.sizeBase, -inv);
+        // For a short, avgCost holds the price at which we shorted (proceeds basis).
+        // Realized = (entry - exit) × size  →  (avgCost - priceUsd) × coverSize.
+        realized += (avgCost - f.priceUsd) * coverSize;
+        const remainder = f.sizeBase - coverSize;
+        const newInv = inv + f.sizeBase;
+        if (newInv > 0) {
+          // Crossed from short into long: seed long basis with the remaining bought
+          avgCost = f.priceUsd;
+        } else if (newInv === 0) {
+          avgCost = 0; // flat — basis is meaningless
+        }
+        // newInv < 0 (still short): avgCost unchanged (we just closed part of the short)
+        void remainder;
+        inv = newInv;
+      } else {
+        // Flat or already long → extend long with WAC
+        const newInv = inv + f.sizeBase;
+        if (newInv > 0.000001) {
+          avgCost = (inv * avgCost + f.sizeBase * f.priceUsd) / newInv;
+        }
+        inv = newInv;
       }
+    } else {
       sellVol += f.sizeBase;
       sellNot += f.notionalUsd;
+      if (inv > 0) {
+        // Reducing long
+        const reduceSize = Math.min(f.sizeBase, inv);
+        realized += (f.priceUsd - avgCost) * reduceSize;
+        const newInv = inv - f.sizeBase;
+        if (newInv < 0) {
+          // Crossed from long into short: seed short basis with sell price
+          avgCost = f.priceUsd;
+        } else if (newInv === 0) {
+          avgCost = 0;
+        }
+        inv = newInv;
+      } else {
+        // Flat or already short → extend short with WAC on the short basis
+        const absInv = -inv;
+        const newAbs = absInv + f.sizeBase;
+        if (newAbs > 0.000001) {
+          avgCost = (absInv * avgCost + f.sizeBase * f.priceUsd) / newAbs;
+        }
+        inv -= f.sizeBase;
+      }
     }
   }
 
