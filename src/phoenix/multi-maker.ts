@@ -96,6 +96,8 @@ export class MultiMarketMaker {
   private stats: MultiMakerStats;
   /** Asset symbol → most recent USD price (from a USDC quote market). */
   private priceCache = new Map<string, number>();
+  /** Tick mutex: prevents overlap if a prior tick is still running across N markets. */
+  private tickInProgress = false;
 
   constructor(connection: Connection, signer: Keypair, cfg: MultiMakerConfig) {
     this.connection = connection;
@@ -175,6 +177,19 @@ export class MultiMarketMaker {
 
   private async tick(): Promise<void> {
     if (!this.running) return;
+    if (this.tickInProgress) {
+      getLogger().debug('mm-multi', 'Skipping tick — previous still in progress');
+      return;
+    }
+    this.tickInProgress = true;
+    try {
+      await this.tickImpl();
+    } finally {
+      this.tickInProgress = false;
+    }
+  }
+
+  private async tickImpl(): Promise<void> {
     this.stats.ticks++;
     const phoenix = getPhoenixClient();
 

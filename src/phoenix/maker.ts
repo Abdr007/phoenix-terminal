@@ -95,6 +95,8 @@ export class Maker {
   private running = false;
   private stats: MakerStats;
   private logSubId: number | null = null;
+  /** Tick mutex: prevents overlap if a prior tick is still running. */
+  private tickInProgress = false;
 
   constructor(connection: Connection, signer: Keypair, cfg: MakerConfig) {
     this.connection = connection;
@@ -272,6 +274,20 @@ export class Maker {
 
   private async tick(): Promise<void> {
     if (!this.running) return;
+    // Prevent overlap: if the previous tick took longer than intervalMs, drop this one.
+    if (this.tickInProgress) {
+      getLogger().debug('mm', 'Skipping tick — previous tick still in progress');
+      return;
+    }
+    this.tickInProgress = true;
+    try {
+      await this.tickImpl();
+    } finally {
+      this.tickInProgress = false;
+    }
+  }
+
+  private async tickImpl(): Promise<void> {
     this.stats.ticks++;
 
     const phoenix = getPhoenixClient();

@@ -146,7 +146,7 @@ export function registerPhoenixTools(engine: ToolEngine, ctx: AppCtx): void {
           const known = discoverWallets().map((w) => w.name).join(', ');
           return renderError(`no wallet matches "${id}". Known: ${known}`);
         }
-        ctx.wallet.disconnect();
+        await ctx.wallet.disconnect();
         try {
           ctx.wallet.loadFromFile(target.path);
         } catch (e) {

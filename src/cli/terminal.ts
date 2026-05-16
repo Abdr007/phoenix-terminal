@@ -71,6 +71,35 @@ export async function runTerminal(): Promise<void> {
 
   // ─── Banner ─────────────────────────────────────────────────────────────────
   console.log(PHOENIX_BANNER);
+
+  // ─── Startup mode picker ────────────────────────────────────────────────────
+  // Skipped when:
+  //   - --mode {paper|live} flag passed
+  //   - $PHOENIX_MODE env set
+  //   - non-TTY stdin (piped / CI)
+  //   - $PHOENIX_NONINTERACTIVE=1
+  const cliModeArg = process.argv.find((a) => a === '--mode' || a === '--paper' || a === '--live');
+  const envMode = (process.env.PHOENIX_MODE ?? '').toLowerCase();
+  const skipPicker =
+    process.env.PHOENIX_NONINTERACTIVE === '1' ||
+    !process.stdin.isTTY ||
+    !!cliModeArg ||
+    envMode === 'paper' || envMode === 'live';
+  if (envMode === 'live') ctx.simulationMode = false;
+  else if (envMode === 'paper') ctx.simulationMode = true;
+  if (cliModeArg === '--live') ctx.simulationMode = false;
+  if (cliModeArg === '--paper') ctx.simulationMode = true;
+  if (cliModeArg === '--mode') {
+    const v = process.argv[process.argv.indexOf('--mode') + 1]?.toLowerCase();
+    if (v === 'live') ctx.simulationMode = false;
+    else if (v === 'paper') ctx.simulationMode = true;
+  }
+
+  if (!skipPicker) {
+    const chosen = await askStartupMode(cfg.simulationMode);
+    ctx.simulationMode = chosen === 'paper';
+  }
+
   console.log(`  ${theme.muted('network:')} ${cfg.network}    ${theme.muted('rpc:')} ${rpc.active.label}    ${theme.muted('mode:')} ${ctx.simulationMode ? theme.success('paper') : theme.error('LIVE')}    ${theme.muted('(toggle: "mode live")')}`);
   if (wallet.hasAddress) {
     console.log(`  ${theme.muted('wallet:')} ${theme.value(wallet.address!)}  ${wallet.isReadOnly ? theme.warning('(read-only)') : theme.success('(signing)')}`);
@@ -157,4 +186,35 @@ function completer(engine: ToolEngine): (line: string) => [string[], string] {
     const hits = cmds.filter((c) => c.startsWith(line));
     return [hits.length ? hits : cmds, line];
   };
+}
+
+/**
+ * Startup picker — prompts the user for paper vs LIVE before the REPL starts.
+ * Default (Enter without input) = paper. Typing `2` or `live` selects LIVE.
+ * Uses readline with a one-shot question — non-TTY callers should set
+ * PHOENIX_NONINTERACTIVE=1 to skip this entirely.
+ */
+async function askStartupMode(defaultPaper: boolean): Promise<'paper' | 'live'> {
+  return new Promise<'paper' | 'live'>((resolve) => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: true });
+    const def = defaultPaper ? 'paper' : 'live';
+    process.stdout.write(
+      '  ' + theme.section('Choose mode') + '\n' +
+      '    ' + theme.success('1) paper') + theme.muted('  — simulation, no on-chain action  (default)') + '\n' +
+      '    ' + theme.error('2) LIVE') + theme.muted('   — REAL transactions, REAL funds') + '\n' +
+      '  ' + theme.muted(`> [Enter for ${def}, type 1/paper or 2/live] `),
+    );
+    const onLine = (raw: string) => {
+      rl.close();
+      const v = raw.trim().toLowerCase();
+      if (v === '2' || v === 'live' || v === 'l') resolve('live');
+      else if (v === '1' || v === 'paper' || v === 'p' || v === '') resolve(defaultPaper ? 'paper' : 'live');
+      else {
+        process.stdout.write(theme.warning(`  unrecognized "${raw}" — defaulting to ${def}\n`));
+        resolve(defaultPaper ? 'paper' : 'live');
+      }
+    };
+    rl.once('line', onLine);
+    rl.once('close', () => resolve(defaultPaper ? 'paper' : 'live'));
+  });
 }

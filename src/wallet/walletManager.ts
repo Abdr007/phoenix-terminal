@@ -69,7 +69,8 @@ export class WalletManager {
     this.idleTimer = setTimeout(() => {
       if (this.keypair) {
         getLogger().warn('wallet', 'Session timed out — wallet disconnected for security');
-        this.disconnect();
+        // Fire-and-forget; if it throws, log it
+        this.disconnect().catch((e) => getLogger().debug('wallet', `idle disconnect: ${(e as Error).message}`));
       }
     }, WalletManager.SESSION_TIMEOUT_MS);
     this.idleTimer.unref();
@@ -82,20 +83,48 @@ export class WalletManager {
 
   resetIdle(): void { this.resetIdleTimer(); }
 
+  // ─── In-flight signing tracker ───────────────────────────────────────────
+  // Increments when a caller begins a signing op; decrements when done.
+  // disconnect() waits for this to hit 0 before zeroing the secret key,
+  // preventing the keypair from being corrupted mid-transaction.
+  private signingInFlight = 0;
+
+  /** Mark the start of a signing operation. MUST be paired with endSigning(). */
+  beginSigning(): void { this.signingInFlight++; }
+  endSigning(): void { if (this.signingInFlight > 0) this.signingInFlight--; }
+
+  /** Wait up to `timeoutMs` for all in-flight signings to complete. */
+  private async drainSigning(timeoutMs = 5000): Promise<void> {
+    const start = Date.now();
+    while (this.signingInFlight > 0 && Date.now() - start < timeoutMs) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+  }
+
+  /**
+   * Internal: zero the current keypair's secret bytes. Used by disconnect()
+   * AND by loadFromFile/connectAddress when replacing an existing keypair.
+   */
+  private zeroCurrentSecret(): void {
+    if (!this.keypair) return;
+    try {
+      const sk = this.keypair.secretKey;
+      if (sk && sk instanceof Uint8Array) sk.fill(0);
+    } catch { /* best effort */ }
+  }
+
   /**
    * Disconnect: zero the keypair's internal secret-key buffer, then drop references.
    * Keypair.fromSecretKey holds a REFERENCE to its input — we mutate the property directly.
+   *
+   * Waits for any in-flight signing to complete (up to 5s) before zeroing,
+   * so we don't corrupt a transaction currently being signed.
    */
-  disconnect(): void {
+  async disconnect(): Promise<void> {
+    if (!this.keypair && !this.publicKey) return;
     this._disconnecting = true;
-    if (this.keypair) {
-      try {
-        const sk = this.keypair.secretKey;
-        if (sk && sk instanceof Uint8Array) sk.fill(0);
-      } catch {
-        /* best effort */
-      }
-    }
+    await this.drainSigning();
+    this.zeroCurrentSecret();
     this.keypair = null;
     this.publicKey = null;
     this._disconnecting = false;
@@ -104,9 +133,16 @@ export class WalletManager {
       clearTimeout(this.idleTimer);
       this.idleTimer = null;
     }
-    // Fire subscribers (e.g. stop active makers). Best-effort; errors are swallowed.
+    // Fire subscribers (e.g. stop active makers). Async errors are caught.
     for (const cb of this.disconnectCallbacks) {
-      try { void cb(); } catch { /* ignore */ }
+      try {
+        const r = cb();
+        if (r && typeof (r as Promise<void>).catch === 'function') {
+          (r as Promise<void>).catch((err) => getLogger().debug('wallet', `disconnect cb: ${(err as Error).message}`));
+        }
+      } catch (err) {
+        getLogger().debug('wallet', `disconnect cb sync error: ${(err as Error).message}`);
+      }
     }
   }
 
@@ -116,7 +152,7 @@ export class WalletManager {
     const home = homedir();
     const homePrefix = home.endsWith('/') ? home : home + '/';
     if (resolved !== home && !resolved.startsWith(homePrefix)) {
-      throw new Error(`Wallet path must be within home directory (${home}). Got: ${resolved}`);
+      throw new Error(`Wallet path must be within home directory. Got: ${resolved}`);
     }
     let realPath: string;
     try { realPath = realpathSync(resolved); } catch { throw new Error(`Wallet file not found: ${resolved}`); }
@@ -141,11 +177,19 @@ export class WalletManager {
       }
     }
 
+    // Zero the previously-loaded keypair's bytes BEFORE replacing the reference,
+    // so we don't leave the old secret floating in V8 memory.
+    this.zeroCurrentSecret();
+
     const keyBytes = Uint8Array.from(secretKey);
-    secretKey.fill(0);
-    // Keypair.fromSecretKey holds a REFERENCE — do NOT zero keyBytes after this call.
+    // Zero the parsed integer array — defensive, since this Array still lives in
+    // closure until GC runs.
+    for (let i = 0; i < 64; i++) secretKey[i] = 0;
+    // Keypair.fromSecretKey holds a REFERENCE to keyBytes — do NOT zero keyBytes
+    // after this call, or the keypair's secret is corrupted.
     this.keypair = Keypair.fromSecretKey(keyBytes);
     this.publicKey = this.keypair.publicKey;
+    this.balancesCache = null;
     getLogger().debug('wallet', `Loaded wallet: ${this.publicKey.toBase58()}`);
     this.resetIdleTimer();
     return { address: this.publicKey.toBase58(), keypair: this.keypair };
@@ -157,8 +201,11 @@ export class WalletManager {
     if (!PublicKey.isOnCurve(pubkey.toBytes())) {
       throw new Error(`Address is not a valid wallet (off-curve): ${address}`);
     }
+    // Zero the previously-loaded signing keypair (if any) before going read-only.
+    this.zeroCurrentSecret();
     this.publicKey = pubkey;
     this.keypair = null;
+    this.balancesCache = null;
     getLogger().debug('wallet', `Connected address (read-only): ${pubkey.toBase58()}`);
     return { address: pubkey.toBase58() };
   }

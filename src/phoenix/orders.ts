@@ -10,14 +10,13 @@ import {
 } from '@solana/web3.js';
 import {
   createAssociatedTokenAccountIdempotentInstruction,
-  createCloseAccountInstruction,
   createSyncNativeInstruction,
   getAssociatedTokenAddressSync,
   NATIVE_MINT,
 } from '@solana/spl-token';
 import * as Phoenix from '@ellipsis-labs/phoenix-sdk';
 import { getPhoenixClient } from './client.js';
-import { makerSetupIxs, hasSeat, invalidateSetupCache } from './seats.js';
+import { makerSetupIxs, invalidateSetupCache } from './seats.js';
 import { getSigningGuard } from '../security/signing-guard.js';
 import { getLogger } from '../utils/logger.js';
 import { loadConfig } from '../config/index.js';
@@ -26,9 +25,13 @@ import { safeNumber } from '../utils/safe-number.js';
 
 const PHOENIX_SIDE = (s: Side): Phoenix.Side => (s === 'bid' ? Phoenix.Side.Bid : Phoenix.Side.Ask);
 
+// Monotonic per-session counter ensures uniqueness even within the same ms
+let _clientOrderCounter = 0;
 function clientOrderId(): number {
-  // Use ms-since-epoch lower 31 bits — collision-resistant within session
-  return Date.now() & 0x7fffffff;
+  _clientOrderCounter = (_clientOrderCounter + 1) & 0xffff; // 16-bit counter
+  // Top 15 bits = seconds since epoch (low bits), low 16 bits = counter → unique 31-bit
+  const seconds = Math.floor(Date.now() / 1000) & 0x7fff;
+  return ((seconds << 16) | _clientOrderCounter) & 0x7fffffff;
 }
 
 interface SendOpts {
@@ -76,14 +79,6 @@ async function sendTx(
   return sig;
 }
 
-/** SOL pair? Caller must wrap SOL into wSOL before bids, and unwrap after sells. */
-function isSolPair(baseMint: string, quoteMint: string): { needsWrap: boolean; mintToWrap?: string } {
-  const wSol = NATIVE_MINT.toBase58();
-  if (baseMint === wSol) return { needsWrap: true, mintToWrap: wSol };
-  if (quoteMint === wSol) return { needsWrap: true, mintToWrap: wSol };
-  return { needsWrap: false };
-}
-
 /** Idempotent ATA + sync-native ixs to wrap a given amount of SOL into wSOL. */
 function wrapSolIxs(owner: PublicKey, lamports: number): TransactionInstruction[] {
   if (lamports <= 0) return [];
@@ -93,12 +88,6 @@ function wrapSolIxs(owner: PublicKey, lamports: number): TransactionInstruction[
     SystemProgram.transfer({ fromPubkey: owner, toPubkey: ata, lamports }),
     createSyncNativeInstruction(ata),
   ];
-}
-
-/** Unwrap wSOL back to native SOL (closes the wSOL ATA). */
-function unwrapSolIx(owner: PublicKey): TransactionInstruction {
-  const ata = getAssociatedTokenAddressSync(NATIVE_MINT, owner);
-  return createCloseAccountInstruction(ata, owner, owner);
 }
 
 // ─── Place limit (maker) ───────────────────────────────────────────────────────
@@ -177,7 +166,27 @@ export async function placeLimit(connection: Connection, signer: Keypair, args: 
       invalidateSetupCache(def.address, trader.toBase58());
       getLogger().warn('phoenix', `Order failed (${msg}). Retrying with fresh seat setup.`);
       const freshSetup = await makerSetupIxs(connection, state, trader);
-      const retryIxs = [...freshSetup, orderIx];
+      // Rebuild orderIx with FRESH TTL (the original may have aged past validity during the failed attempt)
+      const freshOrderIx = args.postOnly
+        ? client.getPostOnlyOrderInstructionfromTemplate(def.address, trader, {
+            side: PHOENIX_SIDE(args.side),
+            priceAsFloat: args.priceUsd,
+            sizeInBaseUnits: args.sizeBase,
+            clientOrderId: clientOrderId(),
+            rejectPostOnly: true,
+            useOnlyDepositedFunds: false,
+            lastValidUnixTimestampInSeconds: Math.floor(Date.now() / 1000) + ttl,
+          })
+        : client.getLimitOrderInstructionfromTemplate(def.address, trader, {
+            side: PHOENIX_SIDE(args.side),
+            priceAsFloat: args.priceUsd,
+            sizeInBaseUnits: args.sizeBase,
+            selfTradeBehavior: Phoenix.SelfTradeBehavior.CancelProvide,
+            clientOrderId: clientOrderId(),
+            useOnlyDepositedFunds: false,
+            lastValidUnixTimestampInSeconds: Math.floor(Date.now() / 1000) + ttl,
+          });
+      const retryIxs = [...freshSetup, freshOrderIx];
       sig = await sendTx(connection, signer, retryIxs, { label: `limit-retry ${args.side} ${def.symbol}` });
     } else {
       guard.logAudit({
@@ -390,30 +399,37 @@ export async function getOpenOrders(symbol: string, trader: PublicKey): Promise<
 
 async function parseFills(connection: Connection, signature: string, trader: PublicKey, symbol: string): Promise<Fill[]> {
   try {
+    // Resolve market ONCE — was being re-fetched per fill event before (perf bug)
+    const phoenix = getPhoenixClient();
+    const client = await phoenix.raw();
+    const def = (await phoenix.getMarket(symbol)).def;
+
     const ptx = await Phoenix.getPhoenixEventsFromTransactionSignature(connection, signature);
     const fills: Fill[] = [];
     const traderStr = trader.toBase58();
     for (const ix of ptx.instructions) {
+      // Only count fills on OUR market (the tx might touch other Phoenix markets too)
+      if (ix.header?.market?.toBase58() !== def.address) continue;
       for (const evt of ix.events) {
         if (!Phoenix.isPhoenixMarketEventFill(evt)) continue;
         const fillEvent = evt.fields[0];
         const isMaker = fillEvent.makerId.toBase58() === traderStr;
-        // priceInTicks and baseLotsFilled require market context for conversion;
-        // we don't have it cheaply here, so we record raw fields and resolve later.
         const priceTicks = safeNumber(Phoenix.toNum(fillEvent.priceInTicks));
         const baseLots = safeNumber(Phoenix.toNum(fillEvent.baseLotsFilled));
-        // Resolve via the loaded market in our client (best effort)
-        const client = await getPhoenixClient().raw();
-        const def = (await getPhoenixClient().getMarket(symbol)).def;
+        if (baseLots === 0) continue;
         const priceUsd = client.ticksToFloatPrice(priceTicks, def.address);
         const sizeBase = client.baseAtomsToRawBaseUnits(
           client.baseLotsToBaseAtoms(baseLots, def.address),
           def.address,
         );
+        // Note: side here is approximate (Phoenix's FillEvent doesn't carry it).
+        // For the IOC/limit caller, this is only used for the returned `side` label;
+        // sizeBase + notional are accurate. The journal indexer uses balance-delta
+        // for ground-truth side detection.
         fills.push({
           signature,
           market: symbol,
-          side: isMaker ? 'bid' : 'ask', // approximate; full side detection needs PlaceEvent matching
+          side: isMaker ? 'bid' : 'ask',
           priceUsd,
           sizeBase,
           notionalUsd: priceUsd * sizeBase,
