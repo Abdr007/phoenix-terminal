@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      # Force paper mode during CI so no on-chain action can happen even if
+      # tests were to construct a Connection
+      SIMULATION_MODE: "true"
+      TRADING_ENABLED: "false"
+      RPC_URL: "https://api.mainnet-beta.solana.com"
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Verify binary is executable
+        run: |
+          test -x dist/index.js
+          head -1 dist/index.js | grep -q '^#!/usr/bin/env node'
