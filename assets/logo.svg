@@ -1,0 +1,47 @@
+<svg viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="phoenix-terminal logo">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0a0a0a"/>
+      <stop offset="100%" stop-color="#1f1308"/>
+    </linearGradient>
+    <linearGradient id="ember" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0%"  stop-color="#FF4B1F"/>
+      <stop offset="55%" stop-color="#FF6B35"/>
+      <stop offset="100%" stop-color="#FFB627"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Rounded dark background -->
+  <rect width="256" height="256" rx="48" ry="48" fill="url(#bg)"/>
+
+  <!-- Corner brackets in ember -->
+  <g stroke="#FF6B35" stroke-width="4" fill="none" opacity="0.7" stroke-linecap="round">
+    <path d="M 24 56 L 24 24 L 56 24"/>
+    <path d="M 232 56 L 232 24 L 200 24"/>
+    <path d="M 24 200 L 24 232 L 56 232"/>
+    <path d="M 232 200 L 232 232 L 200 232"/>
+  </g>
+
+  <!-- Stylized phoenix / flame "P" mark in the center -->
+  <g transform="translate(128 144)" fill="url(#ember)">
+    <!-- Outer flame silhouette -->
+    <path d="M 0 -70
+             C 30 -45, 50 -20, 50 5
+             C 50 35, 28 60, 0 65
+             C -28 60, -50 35, -50 5
+             C -50 -20, -30 -45, 0 -70
+             Z"/>
+    <!-- Inner cutout (lighter — gives the impression of a "P" channel) -->
+    <path d="M 0 -38
+             C 18 -22, 28 -8, 28 6
+             C 28 22, 14 36, 0 38
+             C -14 36, -28 22, -28 6
+             C -28 -8, -18 -22, 0 -38
+             Z" fill="#13100a"/>
+    <!-- Inner ember dot -->
+    <circle cx="0" cy="8" r="10" fill="url(#ember)"/>
+  </g>
+
+  <!-- Wordmark -->
+  <text x="128" y="222" font-family="'SF Mono', 'Menlo', 'Monaco', monospace" font-size="22" font-weight="bold" text-anchor="middle" fill="#FFB627" letter-spacing="4">PHOENIX</text>
+</svg>

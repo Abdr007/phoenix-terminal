@@ -1,10 +1,8 @@
 <div align="center">
 
-# 🔥 phoenix-terminal
+<img src="./assets/banner.svg" alt="phoenix-terminal — interactive trading terminal for the Phoenix CLOB on Solana" width="100%"/>
 
 **The first interactive trading terminal for the [Phoenix CLOB](https://github.com/Ellipsis-Labs/phoenix-v1) on Solana.**
-
-40 commands · full SDK coverage · live PnL · inventory-aware market maker · Jito bundles · natural-language CLI
 
 [![CI](https://github.com/Abdr007/phoenix-terminal/actions/workflows/ci.yml/badge.svg)](https://github.com/Abdr007/phoenix-terminal/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
