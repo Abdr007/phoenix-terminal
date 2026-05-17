@@ -104,6 +104,7 @@ async function fetchHistoricalFills(
 
     // Stop once we cross the cutoff
     const oldest = batch[batch.length - 1];
+    if (!oldest) break; // batch length checked above, but TS doesn't see that
     const oldestTs = (oldest.blockTime ?? 0) * 1000;
     const items = batch.filter((s) => !s.err && (s.blockTime ?? 0) * 1000 >= cutoffMs);
 

@@ -57,7 +57,7 @@ export function defaultTipLamports(): number {
 
 export function pickTipAccount(): PublicKey {
   const idx = Math.floor(Math.random() * JITO_TIP_ACCOUNTS.length);
-  return new PublicKey(JITO_TIP_ACCOUNTS[idx]);
+  return new PublicKey(JITO_TIP_ACCOUNTS[idx]!); // idx is bounded by .length
 }
 
 /** Build a SystemProgram tip transfer to a randomly chosen Jito tip account. */
@@ -237,7 +237,7 @@ export async function sendBundleSimple(
   // CLONE so we don't mutate the caller's array (defensive — fix from audit)
   const clonedIxs = txIxs.map((arr) => [...arr]);
   const lastIdx = clonedIxs.length - 1;
-  clonedIxs[lastIdx].push(tipInstruction(signer.publicKey, tipLamports));
+  clonedIxs[lastIdx]!.push(tipInstruction(signer.publicKey, tipLamports)); // length checked above
 
   const txs: Transaction[] = clonedIxs.map((ixs) => {
     const tx = new Transaction({ recentBlockhash, feePayer: signer.publicKey });
@@ -247,7 +247,7 @@ export async function sendBundleSimple(
   });
 
   // Explicitly check signature presence rather than non-null asserting
-  const firstSig = txs[0].signature;
+  const firstSig = txs[0]?.signature;
   if (!firstSig) throw new Error('sendBundleSimple: tx[0] failed to sign');
 
   const { bundleId } = await sendBundle(txs);

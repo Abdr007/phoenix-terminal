@@ -36,6 +36,7 @@ export function renderBook(book: Orderbook, depth = 10): string {
   // Asks descending (worst at top, best near mid)
   for (let i = asks.length - 1; i >= 0; i--) {
     const lvl = asks[i];
+    if (!lvl) continue;
     const bar = depthBar(lvl.cumulativeBase, maxDepthBase, 18, 'ask');
     lines.push(
       pad(theme.ask(fmtUsd(lvl.priceUsd, 4)), 14) +

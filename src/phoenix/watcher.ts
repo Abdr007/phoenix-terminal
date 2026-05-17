@@ -108,6 +108,7 @@ export class Watcher {
       return;
     }
     const def = this.markets[this.focusedIdx];
+    if (!def) { this.setFlash('no market focused', 2000); return; }
     const snap = this.snaps.get(def.address);
     if (!snap?.bestBid) { this.setFlash('no bid available', 2000); return; }
     try {
@@ -132,6 +133,7 @@ export class Watcher {
       return;
     }
     const def = this.markets[this.focusedIdx];
+    if (!def) { this.setFlash('no market focused', 2000); return; }
     const snap = this.snaps.get(def.address);
     if (!snap?.bestAsk) { this.setFlash('no ask available', 2000); return; }
     try {
@@ -156,6 +158,7 @@ export class Watcher {
       return;
     }
     const def = this.markets[this.focusedIdx];
+    if (!def) { this.setFlash('no market focused', 2000); return; }
     try {
       const sig = await cancelAll(this.connection, this.signer, def.symbol);
       this.setFlash(`✓ cancel-all on ${def.symbol}: ${sig.slice(0, 12)}…`, 3000);
@@ -556,15 +559,17 @@ export class Watcher {
     // ─── Status / hotkey hint line ───
     if (this.signer) {
       const focused = this.markets[this.focusedIdx];
-      const armedStr = this.armed ? theme.error('● ARMED') : theme.success('○ safe');
-      process.stdout.write(
-        '\n' + theme.muted('─ Hotkeys ').padEnd(94, '─') + '\n' +
-        '  ' + armedStr +
-        '  ' + theme.muted('focus:') + ' ' + theme.highlight(focused.symbol) +
-        '  ' + theme.muted('size:') + ' ' + theme.value(String(this.hotkeySize)) + ' ' + focused.baseSymbol +
-        '\n' +
-        '  ' + theme.muted('[space] arm   [j/k] focus   [b] bid   [a] ask   [c] cancel-all   [+/-] size   [q] quit') + '\n',
-      );
+      if (focused) {
+        const armedStr = this.armed ? theme.error('● ARMED') : theme.success('○ safe');
+        process.stdout.write(
+          '\n' + theme.muted('─ Hotkeys ').padEnd(94, '─') + '\n' +
+          '  ' + armedStr +
+          '  ' + theme.muted('focus:') + ' ' + theme.highlight(focused.symbol) +
+          '  ' + theme.muted('size:') + ' ' + theme.value(String(this.hotkeySize)) + ' ' + focused.baseSymbol +
+          '\n' +
+          '  ' + theme.muted('[space] arm   [j/k] focus   [b] bid   [a] ask   [c] cancel-all   [+/-] size   [q] quit') + '\n',
+        );
+      }
     }
     if (this.flash && this.flash.until > Date.now()) {
       process.stdout.write('\n  ' + theme.accent('› ') + this.flash.msg + '\n');

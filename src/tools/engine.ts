@@ -34,7 +34,9 @@ export class ToolEngine {
   async run(line: string): Promise<string | void> {
     const trimmed = line.trim();
     if (!trimmed) return;
-    const [name, ...args] = trimmed.split(/\s+/);
+    const parts = trimmed.split(/\s+/);
+    const name = parts[0] ?? '';
+    const args = parts.slice(1);
     const resolved = this.aliasMap.get(name) ?? name;
     const tool = this.tools.get(resolved);
     if (!tool) {

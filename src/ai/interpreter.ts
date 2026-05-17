@@ -367,7 +367,7 @@ export class AiInterpreter {
 
     if (!command) throw new Error('AI returned empty command');
 
-    const firstWord = command.split(/\s+/)[0];
+    const firstWord = command.split(/\s+/)[0] ?? '';
     const isDestructive = DESTRUCTIVE_COMMANDS.has(firstWord);
 
     const translation: AiTranslation = { command, reasoning, isDestructive, confidence, clarificationNeeded };

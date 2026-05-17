@@ -52,11 +52,11 @@ export class RpcManager {
   constructor(endpoints: RpcEndpoint[]) {
     if (endpoints.length === 0) throw new Error('At least one RPC endpoint is required');
     this.endpoints = endpoints;
-    this._connection = createConnection(endpoints[0].url);
+    this._connection = createConnection(endpoints[0]!.url); // length checked above
   }
 
   get connection(): Connection { return this._connection; }
-  get active(): RpcEndpoint { return this.endpoints[this.activeIndex]; }
+  get active(): RpcEndpoint { return this.endpoints[this.activeIndex]!; } // activeIndex always in range
   get all(): readonly RpcEndpoint[] { return this.endpoints; }
 
   onConnectionChange(cb: (c: Connection, ep: RpcEndpoint) => void): void {
@@ -100,12 +100,13 @@ export class RpcManager {
       logger.error('rpc', 'No healthy alternative endpoint found');
       return false;
     }
-    const prev = this.endpoints[this.activeIndex];
+    const prev = this.endpoints[this.activeIndex]!;
+    const newEp = this.endpoints[candidate]!;
     const prevConn = this._connection;
     this.activeIndex = candidate;
-    this._connection = createConnection(this.endpoints[candidate].url);
+    this._connection = createConnection(newEp.url);
     this.lastFailoverAt = now;
-    logger.info('rpc', `Failover: ${prev.label} → ${this.endpoints[candidate].label}`);
+    logger.info('rpc', `Failover: ${prev.label} → ${newEp.label}`);
     // Close the old connection's WebSocket explicitly so we don't leak a
     // background reconnect loop on the dead endpoint. @solana/web3.js's
     // Connection exposes `_rpcWebSocket` (internal) — wrapped in try/catch
@@ -115,7 +116,7 @@ export class RpcManager {
       ws?.close?.();
     } catch { /* best effort */ }
     for (const cb of this.onChangeCallbacks) {
-      try { cb(this._connection, this.endpoints[candidate]); } catch (e) {
+      try { cb(this._connection, newEp); } catch (e) {
         getLogger().debug('rpc', `onChange callback error: ${(e as Error).message}`);
       }
     }

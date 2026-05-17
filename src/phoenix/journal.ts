@@ -517,7 +517,7 @@ export async function indexWalletFills(
       until,
     });
     if (batch.length === 0) break;
-    if (newestSig === null) newestSig = batch[0].signature;
+    if (newestSig === null) newestSig = batch[0]!.signature; // length checked above
     scanned += batch.length;
 
     // Decode in throttled bursts to avoid 429s on public RPCs
@@ -531,7 +531,7 @@ export async function indexWalletFills(
       if (i + TX_CONCURRENCY < items.length) await new Promise((r) => setTimeout(r, BATCH_DELAY_MS));
     }
 
-    before = batch[batch.length - 1].signature;
+    before = batch[batch.length - 1]!.signature; // length checked above
     until = undefined; // only honor `until` on first call
     if (batch.length < 100) break;
   }

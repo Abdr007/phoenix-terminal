@@ -159,12 +159,12 @@ export async function runTerminal(): Promise<void> {
         'mm','mm-start','mm-stop','mm-multi','deposit','withdraw','free-funds',
         'claim-seat','evict','mode','wallet',
       ]);
-      const hasDestructive = segments.some((s) => DESTRUCTIVE_HEADS.has(s.split(/\s+/)[0]));
+      const hasDestructive = segments.some((s) => DESTRUCTIVE_HEADS.has(s.split(/\s+/)[0] ?? ''));
       if (segments.length > 1 && hasDestructive) {
         console.log(renderError('chained "&&" commands are not allowed when any segment is destructive. Run them one at a time.'));
       } else {
         for (const seg of segments) {
-          const firstWord = seg.split(/\s+/)[0];
+          const firstWord = seg.split(/\s+/)[0] ?? '';
           const looksLikeCommand = engine.has(firstWord);
           let resolved = seg;
           if (!looksLikeCommand && getAiInterpreter()) {

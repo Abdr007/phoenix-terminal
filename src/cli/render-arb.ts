@@ -30,14 +30,15 @@ export function renderArbTable(cycles: ArbCycle[], minBps = 0, max = 10): string
     return lines.join('\n');
   }
   for (const c of filtered) {
+    if (c.legs.length < 3) continue; // triangle scanner guarantees 3 legs; defensive skip
     const profitStr = c.profitBps >= 0
       ? theme.success(`+${c.profitBps.toFixed(1)}bps`)
       : theme.error(`${c.profitBps.toFixed(1)}bps`);
     lines.push(
       pad(profitStr, 12, 'right') +
-      pad(theme.label(legStr(c.legs[0])), 24) +
-      pad(theme.label(legStr(c.legs[1])), 24) +
-      pad(theme.label(legStr(c.legs[2])), 24),
+      pad(theme.label(legStr(c.legs[0]!)), 24) +
+      pad(theme.label(legStr(c.legs[1]!)), 24) +
+      pad(theme.label(legStr(c.legs[2]!)), 24),
     );
   }
   return lines.join('\n');
@@ -65,6 +66,7 @@ export function renderArbResult(result: ExecuteArbResult, network = 'mainnet-bet
   lines.push(theme.section('  PER-LEG'));
   for (let i = 0; i < result.legs.length; i++) {
     const l = result.legs[i];
+    if (!l) continue;
     const status =
       l.status === 'executed' ? theme.success('✓') :
       l.status === 'failed' ? theme.error('✗') :

@@ -372,6 +372,7 @@ export function registerPhoenixTools(engine: ToolEngine, ctx: AppCtx): void {
         return renderInfo(`no cycles above ${minBps}bps right now (top: ${cycles[0]?.profitBps.toFixed(1) ?? 'none'}bps)`);
       }
       const cycle = candidates[0];
+      if (!cycle) return renderInfo('no cycles found after filtering — try a lower --min-bps');
 
       // Tag display
       const tagLabel = dryRun ? theme.success('[DRY RUN]') : theme.error('[LIVE]');
@@ -653,6 +654,7 @@ export function registerPhoenixTools(engine: ToolEngine, ctx: AppCtx): void {
       const rows: string[][] = [];
       for (let i = book.asks.length - 1; i >= 0; i--) {
         const o = book.asks[i];
+        if (!o) continue;
         rows.push([theme.ask('ASK'), fmtUsd(o.price, 4), fmtNum(o.size, 6), o.makerPubkey]);
       }
       rows.push([theme.muted('—'), theme.muted('— mid —'), '', '']);

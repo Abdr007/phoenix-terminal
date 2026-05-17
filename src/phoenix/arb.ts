@@ -108,10 +108,12 @@ export async function scanArb(): Promise<ArbCycle[]> {
   const cycles: ArbCycle[] = [];
 
   for (const tri of triangles) {
+    if (tri.length < 3) continue; // defensive — triangles are built as 3-tuples
     // Permute starting mint
     for (const startIdx of [0, 1, 2]) {
-      const ordering = [tri[startIdx], tri[(startIdx + 1) % 3], tri[(startIdx + 2) % 3]];
-      const [a, b, c] = ordering;
+      const a = tri[startIdx]!;
+      const b = tri[(startIdx + 1) % 3]!;
+      const c = tri[(startIdx + 2) % 3]!;
 
       const mAB = findMarketForPair(a, b);
       const mBC = findMarketForPair(b, c);
@@ -203,6 +205,7 @@ export async function executeArbCycle(
 
   for (let i = 0; i < args.cycle.legs.length; i++) {
     const leg = args.cycle.legs[i];
+    if (!leg) continue; // bounded by .length but TS doesn't know
     const def = MARKETS.find((m) => m.symbol === leg.marketSymbol)!;
     // Determine IOC side: if our `from` mint is the market's base, we ASK (sell base for quote);
     // if `from` is the quote, we BID (buy base with quote).
