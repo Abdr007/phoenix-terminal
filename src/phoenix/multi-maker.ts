@@ -93,6 +93,8 @@ export class MultiMarketMaker {
   private running = false;
   private timer: ReturnType<typeof setInterval> | null = null;
   private logSubId: number | null = null;
+  /** Captured from onLogs Context so journal records the real slot, not 0. */
+  private lastObservedSlot = 0;
   private stats: MultiMakerStats;
   /** Asset symbol → most recent USD price (from a USDC quote market). */
   private priceCache = new Map<string, number>();
@@ -309,7 +311,10 @@ export class MultiMarketMaker {
   private subscribeLogs(): void {
     this.logSubId = this.connection.onLogs(
       Phoenix.PROGRAM_ID,
-      (info) => this.handleProgramLog(info.signature),
+      (info, ctx) => {
+        if (ctx?.slot && Number.isFinite(ctx.slot)) this.lastObservedSlot = ctx.slot;
+        this.handleProgramLog(info.signature);
+      },
       'confirmed',
     );
   }
@@ -400,7 +405,8 @@ export class MultiMarketMaker {
             getJournal().insertFill({
               signature, wallet: walletStr, market: def.symbol, side,
               priceUsd, sizeBase, notionalUsd: notional, isMaker: 1, feeUsd: 0,
-              blockTime: Math.floor(Date.now() / 1000), slot: 0,
+              blockTime: Math.floor(Date.now() / 1000),
+              slot: this.lastObservedSlot,
               quoteSymbol: def.quoteSymbol,
             }, subIndex);
           } catch { /* journal optional */ }

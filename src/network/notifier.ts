@@ -148,7 +148,17 @@ export class Notifier {
     if (tgToken && tgChat) this.channels.push(new TelegramChannel(tgToken, tgChat));
     const generic = safeEnvString('ALERT_WEBHOOK_URL', '');
     if (generic) this.channels.push(new GenericWebhookChannel(generic));
-    this.minSeverity = (safeEnvString('ALERT_MIN_SEVERITY', 'info') as NotifySeverity);
+    // Validate ALERT_MIN_SEVERITY rather than casting blindly — a typo like
+    // `ALERT_MIN_SEVERITY=critical` would have been accepted and silently
+    // broken the severity filter (the cast doesn't validate at runtime).
+    const rawSev = safeEnvString('ALERT_MIN_SEVERITY', 'info');
+    const validSevs: NotifySeverity[] = ['info', 'success', 'warning', 'error'];
+    if ((validSevs as string[]).includes(rawSev)) {
+      this.minSeverity = rawSev as NotifySeverity;
+    } else {
+      console.warn(`[notifier] ALERT_MIN_SEVERITY="${rawSev}" not recognized (expected info|success|warning|error); using info`);
+      this.minSeverity = 'info';
+    }
   }
 
   get configured(): boolean { return this.channels.length > 0; }

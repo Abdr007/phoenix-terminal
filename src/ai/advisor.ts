@@ -125,7 +125,12 @@ export class Advisor {
       model: this.model,
       max_tokens: 1500,
       temperature: 0,
-      system: SYSTEM_PROMPT,
+      // Cache the static SYSTEM_PROMPT — see interpreter.ts for the same
+      // pattern. Advisor calls are bursty (user asks several follow-ups),
+      // so the cache hits often within its 5-min TTL.
+      system: [
+        { type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } },
+      ],
       messages: [{ role: 'user', content: userContent }],
     });
 

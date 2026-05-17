@@ -176,6 +176,38 @@ describe('audit fix: clientOrderId uses elapsed-since-start (not absolute epoch)
   });
 });
 
+describe('audit fix: logger scrubs additional secret patterns', () => {
+  it('scrubs Helius RPC URL embedded API key (hostname form)', async () => {
+    const { scrubForTests } = await import('../src/utils/logger.js');
+    const fakeUuid = '12345678-1234-1234-1234-123456789abc';
+    const input = `RPC URL: https://${fakeUuid}.helius-rpc.com/`;
+    const out = scrubForTests(input);
+    expect(out).not.toContain(fakeUuid);
+    expect(out).toContain('***.helius-rpc.com');
+  });
+  it('scrubs Helius RPC URL embedded API key (path form)', async () => {
+    const { scrubForTests } = await import('../src/utils/logger.js');
+    const fakeUuid = 'abcd1234-abcd-1234-abcd-1234567890ab';
+    const input = `helius-rpc.com/${fakeUuid} is the endpoint`;
+    const out = scrubForTests(input);
+    expect(out).not.toContain(fakeUuid);
+  });
+  it('scrubs GitHub PATs', async () => {
+    const { scrubForTests } = await import('../src/utils/logger.js');
+    const fakePat = 'ghp_' + 'A'.repeat(36);
+    const out = scrubForTests(`token: ${fakePat}`);
+    expect(out).not.toContain(fakePat);
+    expect(out).toContain('gh***_***');
+  });
+  it('scrubs AWS access keys', async () => {
+    const { scrubForTests } = await import('../src/utils/logger.js');
+    const fakeAws = 'AKIAIOSFODNN7EXAMPLE';
+    const out = scrubForTests(`accessKey=${fakeAws}`);
+    expect(out).toContain('AKIA***');
+    expect(out).not.toContain(fakeAws);
+  });
+});
+
 describe('audit fix: verifyKeypairIntegrity rejects half-corrupted keypairs', () => {
   it('rejects a keypair whose public-key half has been zeroed', async () => {
     const { WalletManager } = await import('../src/wallet/walletManager.js');

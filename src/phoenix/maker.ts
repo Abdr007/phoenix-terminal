@@ -97,6 +97,10 @@ export class Maker {
   private logSubId: number | null = null;
   /** Tick mutex: prevents overlap if a prior tick is still running. */
   private tickInProgress = false;
+  /** Slot captured at fill-time so the journal can record the real on-chain
+   *  slot instead of 0. Comes from the onLogs Context — accurate to the
+   *  slot the program log was emitted in. */
+  private lastObservedSlot = 0;
 
   constructor(connection: Connection, signer: Keypair, cfg: MakerConfig) {
     this.connection = connection;
@@ -151,7 +155,12 @@ export class Maker {
   private subscribeLogs(): void {
     this.logSubId = this.connection.onLogs(
       Phoenix.PROGRAM_ID,
-      (info) => this.handleProgramLog(info.signature),
+      (info, ctx) => {
+        // Capture the real slot from the subscription context before we
+        // dispatch the async decode work. Better than `slot: 0` in journal.
+        if (ctx?.slot && Number.isFinite(ctx.slot)) this.lastObservedSlot = ctx.slot;
+        this.handleProgramLog(info.signature);
+      },
       'confirmed',
     );
   }
@@ -248,7 +257,8 @@ export class Maker {
             getJournal().insertFill({
               signature, wallet: walletStr, market: def.symbol, side,
               priceUsd, sizeBase, notionalUsd: notional, isMaker: 1, feeUsd: 0,
-              blockTime: Math.floor(Date.now() / 1000), slot: 0,
+              blockTime: Math.floor(Date.now() / 1000),
+              slot: this.lastObservedSlot,
               quoteSymbol: def.quoteSymbol,
             }, subIndex);
           } catch { /* journal optional */ }

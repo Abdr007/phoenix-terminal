@@ -301,7 +301,13 @@ export class AiInterpreter {
       model: this.model,
       max_tokens: 96,
       temperature: 0,
-      system,
+      // Anthropic prompt caching — the system prompt (~5K tokens, identical
+      // across calls) is marked cacheable. Subsequent calls within the 5-min
+      // TTL skip re-tokenizing it, ~90% cheaper input and noticeably lower
+      // latency on warm cache.
+      system: [
+        { type: 'text', text: system, cache_control: { type: 'ephemeral' } },
+      ],
       tools: [
         {
           name: 'execute_command',

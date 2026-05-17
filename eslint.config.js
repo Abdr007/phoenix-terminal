@@ -17,6 +17,17 @@ export default tseslint.config(
     },
   },
   {
-    ignores: ['dist/**', 'node_modules/**', 'tests/**', 'docs-site/**', 'Formula/**'],
+    // Tests get linted too (phase 11) — but with relaxed rules since vitest
+    // tests intentionally use `any` casts on mock shapes and have lots of
+    // setup-time helpers that look "unused" until describe() runs them.
+    files: ['tests/**/*.ts'],
+    rules: {
+      '@typescript-eslint/no-explicit-any': 'off',
+      '@typescript-eslint/no-unused-vars': 'off',
+      'max-lines': 'off',
+    },
+  },
+  {
+    ignores: ['dist/**', 'node_modules/**', 'docs-site/**', 'Formula/**'],
   },
 );
