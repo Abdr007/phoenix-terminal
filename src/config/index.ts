@@ -99,6 +99,9 @@ export function loadConfig(): PhoenixConfig {
     // Set MAX_NOTIONAL_PER_ORDER=0 to opt back into unlimited.
     maxNotionalPerOrder: safeEnvNumber('MAX_NOTIONAL_PER_ORDER', 10_000),
     maxOrdersPerMinute: safeEnvNumber('MAX_ORDERS_PER_MINUTE', 20),
-    minDelayBetweenOrdersMs: safeEnvNumber('MIN_DELAY_BETWEEN_ORDERS_MS', 500),
+    // Default 150ms — matches .env.example and the MM tick cadence
+    // (cancel + bid + ask in <500ms). The earlier 500ms default rejected
+    // the second place in every MM cycle out-of-the-box.
+    minDelayBetweenOrdersMs: safeEnvNumber('MIN_DELAY_BETWEEN_ORDERS_MS', 150),
   };
 }

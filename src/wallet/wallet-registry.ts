@@ -12,8 +12,8 @@
  */
 
 import { Keypair } from '@solana/web3.js';
-import { existsSync, readdirSync, readFileSync } from 'fs';
-import { homedir } from 'os';
+import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
+import { homedir, platform } from 'os';
 import { join, resolve as resolvePath } from 'path';
 import { getLogger } from '../utils/logger.js';
 
@@ -29,14 +29,44 @@ const SCAN_DIRS = [
   join(homedir(), '.config', 'solana'),
 ].filter((d): d is string => Boolean(d));
 
-function tryLoadPubkey(path: string): string | null {
+/**
+ * Warn (once per path) when a wallet file is world-readable or group-readable.
+ * On Unix the secret-key file should be 0600 (owner-only). Posix-only — Windows
+ * has different semantics, so we skip the check there.
+ */
+const _warnedPaths = new Set<string>();
+function warnIfWorldReadable(path: string): void {
+  if (platform() === 'win32') return;
+  if (_warnedPaths.has(path)) return;
   try {
+    const mode = statSync(path).mode & 0o777;
+    // Bits 0o077 = group + other. Any non-zero bit there means readable beyond owner.
+    if ((mode & 0o077) !== 0) {
+      getLogger().warn('wallet-registry',
+        `${path} permissions are ${mode.toString(8)} — wallet file readable by group/other. ` +
+        `Run: chmod 600 "${path}" to restrict to owner only.`);
+      _warnedPaths.add(path);
+    }
+  } catch { /* stat failed, skip */ }
+}
+
+function tryLoadPubkey(path: string): string | null {
+  let secretBytes: Uint8Array | null = null;
+  try {
+    warnIfWorldReadable(path);
     const raw = JSON.parse(readFileSync(path, 'utf-8'));
     if (!Array.isArray(raw) || raw.length !== 64) return null;
-    const kp = Keypair.fromSecretKey(Uint8Array.from(raw));
+    secretBytes = Uint8Array.from(raw);
+    const kp = Keypair.fromSecretKey(secretBytes);
     return kp.publicKey.toBase58();
   } catch {
     return null;
+  } finally {
+    // Best-effort zero of the locally-held secret bytes so they don't linger
+    // on the heap after we've extracted the pubkey. Keypair.fromSecretKey
+    // holds its own reference; we can't reach that, but we can at least
+    // clear our copy.
+    try { secretBytes?.fill(0); } catch { /* */ }
   }
 }
 

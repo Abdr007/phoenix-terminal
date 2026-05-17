@@ -421,27 +421,6 @@ export function computeMarketPnl(market: string, fills: JournalFill[]): MarketPn
 const TX_CONCURRENCY = 2;
 const BATCH_DELAY_MS = 400;
 
-/**
- * Compute the wallet's base-token balance delta from a parsed tx's meta.
- * Returns the SIGNED change in base tokens (positive = wallet received base = was bidder).
- * Returns null if the wallet has no ATA for that mint in the tx (shouldn't happen for a tx
- * that filled the wallet).
- */
-async function getWalletBaseDelta(connection: Connection, signature: string, walletStr: string, baseMint: string): Promise<number | null> {
-  const tx = await connection.getParsedTransaction(signature, { maxSupportedTransactionVersion: 0 });
-  if (!tx?.meta) return null;
-  const pre = tx.meta.preTokenBalances ?? [];
-  const post = tx.meta.postTokenBalances ?? [];
-  const preBal = pre.find((b) => b.owner === walletStr && b.mint === baseMint);
-  const postBal = post.find((b) => b.owner === walletStr && b.mint === baseMint);
-  // For SOL pairs, the base is wSOL — but the user may have unwrapped, so the postBalance
-  // entry might be missing. Treat missing as 0.
-  const preAmt = preBal ? Number(preBal.uiTokenAmount.uiAmountString ?? '0') : 0;
-  const postAmt = postBal ? Number(postBal.uiTokenAmount.uiAmountString ?? '0') : 0;
-  if (!Number.isFinite(preAmt) || !Number.isFinite(postAmt)) return null;
-  return postAmt - preAmt;
-}
-
 async function processTx(connection: Connection, signature: string, walletStr: string, journal: Journal, verbose: boolean, blockTime: number, slot: number): Promise<number> {
   let inserted = 0;
   try {
@@ -470,10 +449,6 @@ async function processTx(connection: Connection, signature: string, walletStr: s
       const feeUsd = totalFeeQuoteLots > 0
         ? client.quoteAtomsToQuoteUnits(client.quoteLotsToQuoteAtoms(totalFeeQuoteLots, marketAddr), marketAddr)
         : 0;
-      // Side detection via balance delta: compute the wallet's base-token balance change.
-      // If base went UP, the wallet bought base (side = 'bid'). If DOWN, the wallet sold (side = 'ask').
-      // This is 100% accurate for both makers and takers — derived from on-chain settlement.
-      const baseDelta = await getWalletBaseDelta(connection, signature, walletStr, def.baseMint);
 
       for (const evt of ix.events) {
         if (!Phoenix.isPhoenixMarketEventFill(evt)) continue;
@@ -487,13 +462,20 @@ async function processTx(connection: Connection, signature: string, walletStr: s
           client.baseLotsToBaseAtoms(baseLots, marketAddr),
           marketAddr,
         );
-        // Default to a price-vs-implied-mid heuristic if balance delta is unavailable.
-        const fallbackSide: 'bid' | 'ask' = isMaker ? 'bid' : 'ask';
-        const side: 'bid' | 'ask' =
-          baseDelta === null ? fallbackSide :
-          baseDelta > 0 ? 'bid' :
-          baseDelta < 0 ? 'ask' :
-          fallbackSide;
+        // Canonical per-fill side detection (SDK example fillListener.ts):
+        //   bid orders → seqNum twos-complement-negative → sign(fromTwos(64)) < 0
+        //   ask orders → seqNum positive                  → sign(fromTwos(64)) > 0
+        // This is the MAKER side. If our wallet is the maker, that's our side;
+        // if we're the taker, our side is the opposite.
+        //
+        // Previously this used a tx-level NET balance delta, which mis-attributed
+        // every fill in a multi-fill mixed-side tx (e.g. router that hit both
+        // sides of an internal book, or any self-crossing tx).
+        const dir = Phoenix.sign(Phoenix.toBN(f.orderSequenceNumber).fromTwos(64));
+        const makerSide: 'bid' | 'ask' = dir < 0 ? 'bid' : 'ask';
+        const side: 'bid' | 'ask' = isMaker
+          ? makerSide
+          : (makerSide === 'bid' ? 'ask' : 'bid');
         const notional = priceUsd * sizeBase;
         const ok = journal.insertFill({
           signature, wallet: walletStr, market: def.symbol, side,

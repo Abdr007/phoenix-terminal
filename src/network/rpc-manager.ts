@@ -101,10 +101,19 @@ export class RpcManager {
       return false;
     }
     const prev = this.endpoints[this.activeIndex];
+    const prevConn = this._connection;
     this.activeIndex = candidate;
     this._connection = createConnection(this.endpoints[candidate].url);
     this.lastFailoverAt = now;
     logger.info('rpc', `Failover: ${prev.label} → ${this.endpoints[candidate].label}`);
+    // Close the old connection's WebSocket explicitly so we don't leak a
+    // background reconnect loop on the dead endpoint. @solana/web3.js's
+    // Connection exposes `_rpcWebSocket` (internal) — wrapped in try/catch
+    // because it's not part of the public type surface.
+    try {
+      const ws = (prevConn as unknown as { _rpcWebSocket?: { close?: () => void } })._rpcWebSocket;
+      ws?.close?.();
+    } catch { /* best effort */ }
     for (const cb of this.onChangeCallbacks) {
       try { cb(this._connection, this.endpoints[candidate]); } catch (e) {
         getLogger().debug('rpc', `onChange callback error: ${(e as Error).message}`);

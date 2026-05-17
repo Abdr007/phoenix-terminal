@@ -221,9 +221,23 @@ export class WalletManager {
     if (!this.keypair) return false;
     try {
       const sk = this.keypair.secretKey;
-      let nonZero = 0;
-      for (let i = 0; i < 32; i++) if (sk[i] !== 0) nonZero++;
-      return nonZero > 0;
+      if (!sk || sk.length !== 64) return false;
+      // Both halves must contain real (non-all-zero) data: bytes 0..31 are the
+      // ed25519 seed, bytes 32..63 are the derived public key. The previous
+      // check only looked at the seed half, so a partial zero of the public-key
+      // half (or the public-key half overwritten while the seed survived) would
+      // still report "OK" while signatures produced from the corrupted keypair
+      // would never land. Also verify the public-key half matches what we hold.
+      let seedNonZero = 0;
+      for (let i = 0; i < 32; i++) if (sk[i] !== 0) seedNonZero++;
+      let pubNonZero = 0;
+      for (let i = 32; i < 64; i++) if (sk[i] !== 0) pubNonZero++;
+      if (seedNonZero === 0 || pubNonZero === 0) return false;
+      if (this.publicKey) {
+        const stored = this.publicKey.toBytes();
+        for (let i = 0; i < 32; i++) if (stored[i] !== sk[32 + i]) return false;
+      }
+      return true;
     } catch { return false; }
   }
 

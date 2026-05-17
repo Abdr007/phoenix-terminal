@@ -288,6 +288,53 @@ export class Watcher {
     if (this.refreshTimer) { clearInterval(this.refreshTimer); this.refreshTimer = null; }
   }
 
+  /**
+   * Re-mount on a new RPC connection after a failover. Symmetric with
+   * Maker.onConnectionChange / MultiMarketMaker.onConnectionChange — without
+   * this, the watcher silently stops receiving account-change + log events
+   * after an RPC switch.
+   */
+  async onConnectionChange(conn: Connection): Promise<void> {
+    const prevConn = this.connection;
+    const prevSubIds = this.subIds;
+    const prevLogSubId = this.logSubId;
+    this.connection = conn;
+    this.subIds = [];
+    this.logSubId = null;
+    // Re-subscribe to each market's account stream
+    for (const m of this.markets) {
+      const subId = this.connection.onAccountChange(
+        new PublicKey(m.address),
+        async () => {
+          try {
+            const phoenix = getPhoenixClient();
+            await phoenix.refresh(m.address, true);
+            this.computeSnap(m.address);
+            this.requestRender();
+          } catch (e) {
+            getLogger().debug('watcher', `account-update handler failed for ${m.symbol}: ${(e as Error).message}`);
+          }
+        },
+        { commitment: 'confirmed' },
+      );
+      this.subIds.push(subId);
+    }
+    // Re-subscribe to program logs for the fill ticker
+    this.logSubId = this.connection.onLogs(
+      Phoenix.PROGRAM_ID,
+      (logsInfo) => this.handleProgramLog(logsInfo.signature, logsInfo.logs),
+      'confirmed',
+    );
+    // Tear down the OLD subscriptions last so we don't have a window without listeners
+    for (const id of prevSubIds) {
+      try { await prevConn.removeAccountChangeListener(id); } catch { /* */ }
+    }
+    if (prevLogSubId !== null) {
+      try { await prevConn.removeOnLogsListener(prevLogSubId); } catch { /* */ }
+    }
+    getLogger().info('watcher', 'subscriptions re-mounted on new RPC connection');
+  }
+
   private requestRender(): void { this.renderPending = true; }
 
   private async handleProgramLog(signature: string, _logs: string[]): Promise<void> {

@@ -46,6 +46,7 @@ export function registerPhoenixTools(engine: ToolEngine, ctx: AppCtx): void {
   ctx.rpc.onConnectionChange((newConn) => {
     if (ctx.activeMaker) ctx.activeMaker.onConnectionChange(newConn).catch(() => {});
     if (ctx.activeMultiMaker) ctx.activeMultiMaker.onConnectionChange(newConn).catch(() => {});
+    if (ctx.activeWatcher) ctx.activeWatcher.onConnectionChange(newConn).catch(() => {});
   });
 
   // Delegate large tool groups to their own modules to keep this file readable.

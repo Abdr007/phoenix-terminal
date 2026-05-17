@@ -100,12 +100,27 @@ export class SigningGuard {
   }
 
   logAudit(entry: AuditEntry): void {
-    const line = JSON.stringify(entry) + '\n';
+    // Sanitize: strip newlines from `reason` so a stack-trace can't inject
+    // fake log lines that break downstream parsers.
+    const safe: AuditEntry = entry.reason
+      ? { ...entry, reason: entry.reason.replace(/[\r\n]+/g, ' ').slice(0, 500) }
+      : entry;
+    const line = JSON.stringify(safe) + '\n';
     try {
       if (existsSync(this.cfg.auditLogPath)) {
         const size = statSync(this.cfg.auditLogPath).size;
         if (size > MAX_LOG_BYTES) {
-          renameSync(this.cfg.auditLogPath, this.cfg.auditLogPath + '.old');
+          // Numbered rotation: shift .old.2 → .old.3, .old → .old.2, current → .old
+          // Keeps 4 generations (~40MB at default 10MB cap) — enough that disk-
+          // full or rapid rotation doesn't erase recent forensic history.
+          for (let i = 3; i >= 1; i--) {
+            const from = i === 1 ? this.cfg.auditLogPath + '.old' : this.cfg.auditLogPath + `.old.${i}`;
+            const to = this.cfg.auditLogPath + `.old.${i + 1}`;
+            if (existsSync(from)) {
+              try { renameSync(from, to); } catch { /* skip */ }
+            }
+          }
+          try { renameSync(this.cfg.auditLogPath, this.cfg.auditLogPath + '.old'); } catch { /* skip */ }
           writeFileSync(this.cfg.auditLogPath, '', { mode: 0o600 });
         }
       }
