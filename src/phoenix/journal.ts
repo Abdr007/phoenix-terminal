@@ -28,41 +28,68 @@ export interface JournalFill {
   wallet: string;
   market: string;
   side: 'bid' | 'ask';
+  /** Quote-per-base price (NOT necessarily USD — see quoteSymbol). For
+   *  SOL/USDC it's USD/SOL; for JitoSOL/SOL it's SOL/JitoSOL. */
   priceUsd: number;
   sizeBase: number;
+  /** sizeBase × priceUsd in quote-of-market units. For non-USD-quoted
+   *  markets (JitoSOL/SOL, mSOL/SOL) this is a quote-token amount, NOT
+   *  USD. Use the quoteSymbol field to disambiguate. */
   notionalUsd: number;
   isMaker: number; // 0 or 1 (SQLite bool)
   feeUsd: number;
   blockTime: number; // unix seconds
   slot: number;
+  /** Quote currency symbol (e.g. 'USDC', 'SOL'). Lets cross-market
+   *  aggregation segregate values by unit. Defaults to 'USDC' for
+   *  rows migrated from the pre-quoteSymbol schema. */
+  quoteSymbol?: string;
 }
 
 export interface MarketPnl {
   market: string;
+  /** Quote currency for THIS market (USDC, SOL, USDT, ...). All notional /
+   *  PnL fields below are denominated in this currency. */
+  quoteSymbol: string;
   fills: number;
   buyVolumeBase: number;
   sellVolumeBase: number;
-  buyNotionalUsd: number;
-  sellNotionalUsd: number;
-  inventoryBase: number;     // current net inventory
-  avgCostUsd: number;        // weighted-average cost
-  realizedPnlUsd: number;    // closed-loop realized
-  makerVolumeUsd: number;
-  takerVolumeUsd: number;
+  buyNotionalUsd: number;       // really: in quoteSymbol units
+  sellNotionalUsd: number;      // really: in quoteSymbol units
+  inventoryBase: number;        // current net inventory
+  avgCostUsd: number;           // really: avgCost in quoteSymbol per base
+  realizedPnlUsd: number;       // really: realized PnL in quoteSymbol
+  makerVolumeUsd: number;       // really: in quoteSymbol units
+  takerVolumeUsd: number;       // really: in quoteSymbol units
   feesUsd: number;
   firstFillAt: number | null;
   lastFillAt: number | null;
 }
 
+/** Aggregate totals split by quote currency so we don't sum USDC and SOL. */
+export interface PnlTotalsByQuote {
+  quoteSymbol: string;
+  totalVolume: number;        // in quoteSymbol units
+  totalRealizedPnl: number;   // in quoteSymbol units
+  totalFees: number;          // in quoteSymbol units
+  makerVolume: number;
+  takerVolume: number;
+}
+
 export interface PnlSummary {
   wallet: string;
   totalFills: number;
+  /** Sum of buy+sell notional for USDC-quoted markets ONLY. Use
+   *  `totalsByQuote` for the per-currency breakdown. */
   totalVolumeUsd: number;
   totalRealizedPnlUsd: number;
   totalFeesUsd: number;
   makerVolumeUsd: number;
   takerVolumeUsd: number;
   makerRatio: number;
+  /** Per-quote-currency aggregates. USDC + SOL + USDT + ... segregated
+   *  so values are never summed across mismatched units. */
+  totalsByQuote: PnlTotalsByQuote[];
   uniqueMarkets: number;
   uniqueActiveDays: number;
   perMarket: MarketPnl[];
@@ -94,6 +121,7 @@ export class Journal {
         feeUsd REAL NOT NULL DEFAULT 0,
         blockTime INTEGER NOT NULL,
         slot INTEGER NOT NULL,
+        quoteSymbol TEXT NOT NULL DEFAULT 'USDC',
         PRIMARY KEY (signature, sub_index)
       );
       CREATE INDEX IF NOT EXISTS fills_wallet_market_time ON fills(wallet, market, blockTime DESC);
@@ -105,8 +133,7 @@ export class Journal {
         last_indexed_at INTEGER NOT NULL
       );
     `);
-    // Migrate old schema (PRIMARY KEY signature alone) → composite (signature, sub_index).
-    // Detection: PRAGMA table_info reports no `sub_index` column on an existing row.
+    // Migration 1: old schema (PRIMARY KEY signature alone) → composite (signature, sub_index).
     try {
       const cols = this.db.prepare(`PRAGMA table_info(fills)`).all() as Array<{ name: string }>;
       const hasSubIndex = cols.some((c) => c.name === 'sub_index');
@@ -127,6 +154,7 @@ export class Journal {
             feeUsd REAL NOT NULL DEFAULT 0,
             blockTime INTEGER NOT NULL,
             slot INTEGER NOT NULL,
+            quoteSymbol TEXT NOT NULL DEFAULT 'USDC',
             PRIMARY KEY (signature, sub_index)
           );
           INSERT INTO fills (signature, sub_index, wallet, market, side, priceUsd, sizeBase, notionalUsd, isMaker, feeUsd, blockTime, slot)
@@ -138,8 +166,21 @@ export class Journal {
         `);
       }
     } catch {
-      // Best-effort migration — if it fails the new CREATE TABLE IF NOT EXISTS
-      // above still applies to fresh dbs. Old data is preserved as-is.
+      // Best-effort — fresh CREATE TABLE above still applies on a new db.
+    }
+    // Migration 2: add `quoteSymbol` column if missing (composite-PK schema
+    // pre-dates it). SQLite supports ADD COLUMN with DEFAULT, no rebuild needed.
+    try {
+      const cols = this.db.prepare(`PRAGMA table_info(fills)`).all() as Array<{ name: string }>;
+      const hasQuoteSymbol = cols.some((c) => c.name === 'quoteSymbol');
+      if (!hasQuoteSymbol && cols.length > 0) {
+        this.db.exec(`ALTER TABLE fills ADD COLUMN quoteSymbol TEXT NOT NULL DEFAULT 'USDC'`);
+        // Backfill known non-USDC-quoted markets so old rows are correctly tagged.
+        this.db.exec(`UPDATE fills SET quoteSymbol = 'SOL'  WHERE market IN ('JitoSOL/SOL', 'mSOL/SOL')`);
+        this.db.exec(`UPDATE fills SET quoteSymbol = 'USDT' WHERE market = 'SOL/USDT'`);
+      }
+    } catch {
+      // Best-effort
     }
   }
 
@@ -149,11 +190,14 @@ export class Journal {
    * Defaults to 0 for callers that have only one fill per tx.
    */
   insertFill(f: JournalFill, subIndex: number = 0): boolean {
+    // Default to USDC if not supplied (existing callers; we infer from
+    // market def at the call sites for new code).
+    const quoteSymbol = f.quoteSymbol ?? inferQuoteSymbol(f.market);
     const stmt = this.db.prepare(`
-      INSERT OR IGNORE INTO fills (signature, sub_index, wallet, market, side, priceUsd, sizeBase, notionalUsd, isMaker, feeUsd, blockTime, slot)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT OR IGNORE INTO fills (signature, sub_index, wallet, market, side, priceUsd, sizeBase, notionalUsd, isMaker, feeUsd, blockTime, slot, quoteSymbol)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
-    const r = stmt.run(f.signature, subIndex, f.wallet, f.market, f.side, f.priceUsd, f.sizeBase, f.notionalUsd, f.isMaker, f.feeUsd, f.blockTime, f.slot);
+    const r = stmt.run(f.signature, subIndex, f.wallet, f.market, f.side, f.priceUsd, f.sizeBase, f.notionalUsd, f.isMaker, f.feeUsd, f.blockTime, f.slot, quoteSymbol);
     return r.changes > 0;
   }
 
@@ -183,7 +227,16 @@ export class Journal {
       .all(wallet, market) as JournalFill[];
   }
 
-  /** Wallet-wide PnL summary, computed by replaying fills per market with WAC. */
+  /**
+   * Wallet-wide PnL summary, computed by replaying fills per market with WAC.
+   *
+   * IMPORTANT: previously this summed `notionalUsd` across all markets, but the
+   * value is actually quote-of-market — for JitoSOL/SOL that's SOL, not USD.
+   * Adding USDC + SOL produces nonsense. We now segregate totals by quote
+   * currency in `totalsByQuote`, and `totalVolumeUsd` (plus the `*Usd` fields)
+   * reports ONLY the USDC-quoted slice. UI should render `totalsByQuote` to
+   * show the full picture without unit-mixing.
+   */
   summary(wallet: string): PnlSummary {
     const markets = this.db
       .prepare(`SELECT DISTINCT market FROM fills WHERE wallet = ?`)
@@ -192,22 +245,25 @@ export class Journal {
     const perMarket: MarketPnl[] = [];
     const days = new Set<string>();
     let totalFills = 0;
-    let totalVolume = 0;
-    let totalRealized = 0;
-    let totalFees = 0;
-    let makerVol = 0;
-    let takerVol = 0;
+    const byQuote = new Map<string, PnlTotalsByQuote>();
 
     for (const { market } of markets) {
       const fills = this.marketFills(wallet, market);
       const m = computeMarketPnl(market, fills);
       perMarket.push(m);
       totalFills += m.fills;
-      totalVolume += m.buyNotionalUsd + m.sellNotionalUsd;
-      totalRealized += m.realizedPnlUsd;
-      totalFees += m.feesUsd;
-      makerVol += m.makerVolumeUsd;
-      takerVol += m.takerVolumeUsd;
+      const q = m.quoteSymbol;
+      const acc = byQuote.get(q) ?? {
+        quoteSymbol: q,
+        totalVolume: 0, totalRealizedPnl: 0, totalFees: 0,
+        makerVolume: 0, takerVolume: 0,
+      };
+      acc.totalVolume += m.buyNotionalUsd + m.sellNotionalUsd;
+      acc.totalRealizedPnl += m.realizedPnlUsd;
+      acc.totalFees += m.feesUsd;
+      acc.makerVolume += m.makerVolumeUsd;
+      acc.takerVolume += m.takerVolumeUsd;
+      byQuote.set(q, acc);
       for (const f of fills) {
         days.add(new Date(f.blockTime * 1000).toISOString().slice(0, 10));
       }
@@ -215,15 +271,24 @@ export class Journal {
 
     perMarket.sort((a, b) => (b.buyNotionalUsd + b.sellNotionalUsd) - (a.buyNotionalUsd + a.sellNotionalUsd));
 
+    // Back-compat: the *Usd fields report the USDC-quoted slice ONLY so they
+    // never mix units. Callers needing non-USDC totals should read totalsByQuote.
+    const usdc = byQuote.get('USDC') ?? {
+      quoteSymbol: 'USDC',
+      totalVolume: 0, totalRealizedPnl: 0, totalFees: 0,
+      makerVolume: 0, takerVolume: 0,
+    };
+
     return {
       wallet,
       totalFills,
-      totalVolumeUsd: totalVolume,
-      totalRealizedPnlUsd: totalRealized,
-      totalFeesUsd: totalFees,
-      makerVolumeUsd: makerVol,
-      takerVolumeUsd: takerVol,
-      makerRatio: totalVolume > 0 ? makerVol / totalVolume : 0,
+      totalVolumeUsd: usdc.totalVolume,
+      totalRealizedPnlUsd: usdc.totalRealizedPnl,
+      totalFeesUsd: usdc.totalFees,
+      makerVolumeUsd: usdc.makerVolume,
+      takerVolumeUsd: usdc.takerVolume,
+      makerRatio: usdc.totalVolume > 0 ? usdc.makerVolume / usdc.totalVolume : 0,
+      totalsByQuote: Array.from(byQuote.values()).sort((a, b) => b.totalVolume - a.totalVolume),
       uniqueMarkets: markets.length,
       uniqueActiveDays: days.size,
       perMarket,
@@ -233,6 +298,17 @@ export class Journal {
   close(): void {
     this.db.close();
   }
+}
+
+/**
+ * Best-effort quote symbol inference from a market symbol string. Used as a
+ * fallback when the caller didn't supply one (legacy rows / older callers).
+ * Falls back to 'USDC' for unknown markets to match the schema default.
+ */
+function inferQuoteSymbol(market: string): string {
+  const slashIdx = market.indexOf('/');
+  if (slashIdx < 0) return 'USDC';
+  return market.slice(slashIdx + 1);
 }
 
 /** Pure WAC PnL replay over a chronologically-sorted list of fills. Exported for tests. */
@@ -314,8 +390,13 @@ export function computeMarketPnl(market: string, fills: JournalFill[]): MarketPn
     }
   }
 
+  // Quote symbol — prefer the row-level value (set at write time from the
+  // market def) but fall back to inferring from the market string for legacy
+  // rows where every row was silently labeled as USDC.
+  const quoteSymbol = fills[0]?.quoteSymbol ?? inferQuoteSymbol(market);
   return {
     market,
+    quoteSymbol,
     fills: fills.length,
     buyVolumeBase: buyVol,
     sellVolumeBase: sellVol,
@@ -419,6 +500,7 @@ async function processTx(connection: Connection, signature: string, walletStr: s
           priceUsd, sizeBase, notionalUsd: notional, isMaker: isMaker ? 1 : 0,
           feeUsd: isMaker ? 0 : feeUsd,
           blockTime, slot,
+          quoteSymbol: def.quoteSymbol,
         }, subIndex);
         if (ok) inserted++;
         subIndex++;

@@ -176,6 +176,48 @@ describe('audit fix: clientOrderId uses elapsed-since-start (not absolute epoch)
   });
 });
 
+describe('audit fix: cross-market PnL totals segregated by quote currency', () => {
+  it('USDC and SOL fills are aggregated separately, never summed', async () => {
+    const { Journal } = await import('../src/phoenix/journal.js');
+    const tmpDir = await import('os').then((os) => os.tmpdir());
+    const path = await import('path').then((p) => p.join(tmpDir, `phx-quote-test-${Date.now()}.db`));
+    const j = new Journal(path);
+    try {
+      // 1 SOL bought at $200 USDC → $200 USDC volume
+      j.insertFill({
+        signature: 'sig-usdc-1', wallet: 'W', market: 'SOL/USDC',
+        side: 'bid', priceUsd: 200, sizeBase: 1, notionalUsd: 200,
+        isMaker: 0, feeUsd: 0.16, blockTime: 1, slot: 1,
+        quoteSymbol: 'USDC',
+      });
+      // 1 JitoSOL sold for 0.93 SOL → 0.93 SOL volume (NOT $0.93)
+      j.insertFill({
+        signature: 'sig-sol-1', wallet: 'W', market: 'JitoSOL/SOL',
+        side: 'ask', priceUsd: 0.93, sizeBase: 1, notionalUsd: 0.93,
+        isMaker: 0, feeUsd: 0.0007, blockTime: 2, slot: 2,
+        quoteSymbol: 'SOL',
+      });
+      const s = j.summary('W');
+      // USDC bucket
+      const usdc = s.totalsByQuote.find((q) => q.quoteSymbol === 'USDC');
+      expect(usdc).toBeDefined();
+      expect(usdc!.totalVolume).toBeCloseTo(200, 4);
+      // SOL bucket — segregated, not summed with USDC
+      const sol = s.totalsByQuote.find((q) => q.quoteSymbol === 'SOL');
+      expect(sol).toBeDefined();
+      expect(sol!.totalVolume).toBeCloseTo(0.93, 6);
+      // Back-compat: totalVolumeUsd is the USDC slice ONLY
+      expect(s.totalVolumeUsd).toBeCloseTo(200, 4);
+      // Two markets, two quote buckets
+      expect(s.uniqueMarkets).toBe(2);
+      expect(s.totalsByQuote.length).toBe(2);
+    } finally {
+      j.close();
+      await import('fs').then((fs) => { try { fs.unlinkSync(path); } catch { /* */ } });
+    }
+  });
+});
+
 describe('audit fix: journal composite PK keeps multi-fill same-tx events', () => {
   it('two fills with the same signature but different sub_index both insert', async () => {
     const { Journal } = await import('../src/phoenix/journal.js');

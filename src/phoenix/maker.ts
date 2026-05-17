@@ -249,6 +249,7 @@ export class Maker {
               signature, wallet: walletStr, market: def.symbol, side,
               priceUsd, sizeBase, notionalUsd: notional, isMaker: 1, feeUsd: 0,
               blockTime: Math.floor(Date.now() / 1000), slot: 0,
+              quoteSymbol: def.quoteSymbol,
             }, subIndex);
           } catch { /* journal optional */ }
           subIndex++;

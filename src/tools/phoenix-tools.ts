@@ -7,13 +7,10 @@ import { findMarket, MARKETS } from '../phoenix/markets.js';
 import { scanArb, executeArbCycle } from '../phoenix/arb.js';
 import { Watcher } from '../phoenix/watcher.js';
 import { Maker, DEFAULT_MAKER } from '../phoenix/maker.js';
-import { MultiMarketMaker, DEFAULT_MULTI_MAKER } from '../phoenix/multi-maker.js';
 import { Dashboard } from '../phoenix/dashboard.js';
 import { getNotifier } from '../network/notifier.js';
 import { runBacktest } from '../phoenix/backtest.js';
 import { fetchPythPrice, supportedSymbols } from '../phoenix/oracle.js';
-import { fetchWalletFills } from '../phoenix/fills.js';
-import { getJournal, indexWalletFills } from '../phoenix/journal.js';
 import { deposit, withdraw, getFreeFunds } from '../phoenix/vault.js';
 import { placeLadder, LadderLevel } from '../phoenix/ladder-quote.js';
 import { cancelById, cancelUpTo, reduceOrder } from '../phoenix/cancel-advanced.js';
@@ -24,9 +21,7 @@ import { fetchTipFloor, recommendTipLamports, defaultTipLamports, JITO_TIP_ACCOU
 import { getAiInterpreter } from '../ai/interpreter.js';
 import { Advisor, gatherLiveState } from '../ai/advisor.js';
 import * as Phoenix from '@ellipsis-labs/phoenix-sdk';
-import { WalletManager } from '../wallet/walletManager.js';
 import { discoverWallets, resolveWallet } from '../wallet/wallet-registry.js';
-import { RpcManager } from '../network/rpc-manager.js';
 import { loadConfig } from '../config/index.js';
 import { renderBook } from '../cli/render-book.js';
 import { renderArbTable, renderArbResult } from '../cli/render-arb.js';
@@ -34,54 +29,13 @@ import { renderError, renderInfo, renderKV, renderSuccess, renderTable, renderWa
 import { theme } from '../cli/theme.js';
 import { fmtNum, fmtUsd } from '../utils/format.js';
 import { txLink, addrLink } from '../utils/explorer.js';
+import { AppCtx, flagNum, flagInt } from './tool-helpers.js';
+import { registerJournalTools } from './tools-journal.js';
+import { registerMmMultiTool } from './tools-mm-multi.js';
+import { registerExamplesTool } from './tools-examples.js';
 
-/**
- * Look up the value following a `--flag` token and parse it as a finite number.
- * Returns the fallback when the flag is absent. Throws when the flag is present
- * but the next token is missing, starts with `--`, or doesn't parse to a
- * finite positive (or zero) number — prevents `--max-slippage --use-jito`
- * from silently producing NaN and disabling the slippage check.
- *
- * @param positive — when true (default), the parsed value must be ≥ 0.
- */
-function flagNum(args: string[], flag: string, fallback: number, positive = true): number {
-  const idx = args.indexOf(flag);
-  if (idx < 0) return fallback;
-  const next = args[idx + 1];
-  if (next === undefined || next.startsWith('--')) {
-    throw new Error(`${flag} requires a numeric value (got ${next === undefined ? 'nothing' : `"${next}"`}).`);
-  }
-  const n = Number(next);
-  if (!Number.isFinite(n)) {
-    throw new Error(`${flag} expects a number, got "${next}".`);
-  }
-  if (positive && n < 0) {
-    throw new Error(`${flag} must be ≥ 0, got ${n}.`);
-  }
-  return n;
-}
-
-/** Same as flagNum but parses an integer; rejects fractional values. */
-function flagInt(args: string[], flag: string, fallback: number, positive = true): number {
-  const n = flagNum(args, flag, fallback, positive);
-  if (!Number.isInteger(n)) {
-    throw new Error(`${flag} expects an integer, got ${n}.`);
-  }
-  return n;
-}
-
-/** Container for ambient state the tools need. */
-export interface AppCtx {
-  wallet: WalletManager;
-  rpc: RpcManager;
-  activeWatcher: Watcher | null;
-  activeMaker: Maker | null;
-  activeMultiMaker: MultiMarketMaker | null;
-  /** Runtime-mutable mode flag — defaults to ctx.simulationMode but can be toggled via `mode` command. */
-  simulationMode: boolean;
-  /** Callback invoked when mode changes so the REPL prompt can refresh. */
-  onModeChange?: (newMode: boolean) => void;
-}
+// Re-export AppCtx for backwards-compat with callers that imported it from here.
+export type { AppCtx };
 
 export function registerPhoenixTools(engine: ToolEngine, ctx: AppCtx): void {
   const cfg = loadConfig();
@@ -93,6 +47,11 @@ export function registerPhoenixTools(engine: ToolEngine, ctx: AppCtx): void {
     if (ctx.activeMaker) ctx.activeMaker.onConnectionChange(newConn).catch(() => {});
     if (ctx.activeMultiMaker) ctx.activeMultiMaker.onConnectionChange(newConn).catch(() => {});
   });
+
+  // Delegate large tool groups to their own modules to keep this file readable.
+  registerJournalTools(engine, ctx);
+  registerMmMultiTool(engine, ctx);
+  registerExamplesTool(engine);
 
   engine.register({
     name: 'help',
@@ -535,132 +494,6 @@ export function registerPhoenixTools(engine: ToolEngine, ctx: AppCtx): void {
   });
 
   engine.register({
-    name: 'fills',
-    summary: 'Recent fills for this wallet (from local journal — instant after first sync).',
-    usage: 'fills [limit] [--sync]',
-    examples: ['fills', 'fills 50', 'fills --sync  (force re-index from chain)'],
-    handler: async (args) => {
-      if (!ctx.wallet.hasAddress) return renderError('wallet not connected');
-      const limit = args[0] && !args[0].startsWith('--') ? Math.min(100, Math.max(1, parseInt(args[0], 10))) : 20;
-      const journal = getJournal();
-      const wallet = ctx.wallet.getPublicKey()!;
-      const sync = args.includes('--sync') || journal.getCursor(wallet.toBase58()) === null;
-      if (sync) {
-        const { scanned, inserted } = await indexWalletFills(ctx.rpc.connection, wallet, journal, { maxNewSigs: 500 });
-        if (inserted > 0) {
-          process.stdout.write(renderInfo(`indexed ${inserted} new fill(s) (scanned ${scanned} sigs)`) + '\n');
-        }
-      }
-      const fills = journal.recent(wallet.toBase58(), limit);
-      if (fills.length === 0) {
-        // Fallback to live RPC scan if journal empty after sync (e.g. ZSTD failure)
-        const live = await fetchWalletFills(ctx.rpc.connection, wallet, { scanLimit: limit * 3, resultLimit: limit });
-        if (live.length === 0) return renderInfo('no Phoenix fills found for this wallet');
-        return renderTable(
-          [
-            { header: 'TIME', width: 12 },
-            { header: 'MARKET', width: 14 },
-            { header: 'ROLE', width: 6 },
-            { header: 'PRICE', width: 14, align: 'right' },
-            { header: 'SIZE', width: 14, align: 'right' },
-            { header: 'NOTIONAL', width: 12, align: 'right' },
-            { header: 'SIGNATURE', width: 88 },
-          ],
-          live.map((f) => [
-            f.timestamp ? new Date(f.timestamp).toLocaleString().split(',')[1]?.trim() ?? '—' : '—',
-            f.market, f.isMaker ? theme.bid('MAKER') : theme.ask('TAKER'),
-            fmtUsd(f.priceUsd, 4), fmtNum(f.sizeBase, 6), fmtUsd(f.notionalUsd, 2), f.signature,
-          ]),
-        );
-      }
-      return renderTable(
-        [
-          { header: 'TIME', width: 12 },
-          { header: 'MARKET', width: 14 },
-          { header: 'ROLE', width: 6 },
-          { header: 'PRICE', width: 14, align: 'right' },
-          { header: 'SIZE', width: 14, align: 'right' },
-          { header: 'NOTIONAL', width: 12, align: 'right' },
-          { header: 'SIGNATURE', width: 88 },
-        ],
-        fills.map((f) => [
-          f.blockTime ? new Date(f.blockTime * 1000).toLocaleString().split(',')[1]?.trim() ?? '—' : '—',
-          f.market,
-          f.isMaker ? theme.bid('MAKER') : theme.ask('TAKER'),
-          fmtUsd(f.priceUsd, 4),
-          fmtNum(f.sizeBase, 6),
-          fmtUsd(f.notionalUsd, 2),
-          f.signature,
-        ]),
-      );
-    },
-  });
-
-  engine.register({
-    name: 'pnl',
-    summary: 'Realized PnL per market + total (weighted-avg-cost from indexed fills).',
-    usage: 'pnl [--sync]',
-    aliases: ['p&l'],
-    handler: async (args) => {
-      if (!ctx.wallet.hasAddress) return renderError('wallet not connected');
-      const wallet = ctx.wallet.getPublicKey()!;
-      const journal = getJournal();
-      const needsSync = args.includes('--sync') || journal.getCursor(wallet.toBase58()) === null;
-      if (needsSync) {
-        process.stdout.write(renderInfo('syncing journal from on-chain (one-time, then instant)…') + '\n');
-        const r = await indexWalletFills(ctx.rpc.connection, wallet, journal, { maxNewSigs: 500 });
-        process.stdout.write(renderInfo(`indexed ${r.inserted} new fill(s)`) + '\n');
-      }
-      const s = journal.summary(wallet.toBase58());
-      if (s.totalFills === 0) return renderInfo('no Phoenix fills indexed yet for this wallet. Try: pnl --sync');
-
-      const lines: string[] = [];
-      lines.push(theme.header('  PNL SUMMARY'));
-      lines.push('  ' + theme.fullSeparator().slice(0, 78));
-      lines.push(renderKV([
-        ['wallet', wallet.toBase58()],
-        ['total fills', String(s.totalFills)],
-        ['total volume', fmtUsd(s.totalVolumeUsd, 2)],
-        ['realized PnL', s.totalRealizedPnlUsd >= 0 ? theme.success('+' + fmtUsd(s.totalRealizedPnlUsd, 4)) : theme.error(fmtUsd(s.totalRealizedPnlUsd, 4))],
-        ['fees paid', fmtUsd(s.totalFeesUsd, 4)],
-        ['net PnL after fees', (s.totalRealizedPnlUsd - s.totalFeesUsd) >= 0 ? theme.success('+' + fmtUsd(s.totalRealizedPnlUsd - s.totalFeesUsd, 4)) : theme.error(fmtUsd(s.totalRealizedPnlUsd - s.totalFeesUsd, 4))],
-        ['maker / taker volume', `${fmtUsd(s.makerVolumeUsd, 2)} / ${fmtUsd(s.takerVolumeUsd, 2)}`],
-        ['maker ratio', `${(s.makerRatio * 100).toFixed(1)}%`],
-        ['unique markets', String(s.uniqueMarkets)],
-        ['active days', String(s.uniqueActiveDays)],
-      ]));
-      lines.push('');
-      lines.push(theme.section('  PER-MARKET'));
-      lines.push(renderTable(
-        [
-          { header: 'MARKET', width: 14 },
-          { header: 'FILLS', width: 6, align: 'right' },
-          { header: 'VOLUME', width: 14, align: 'right' },
-          { header: 'INVENTORY', width: 12, align: 'right' },
-          { header: 'AVG COST', width: 12, align: 'right' },
-          { header: 'REALIZED', width: 14, align: 'right' },
-          { header: 'MAKER %', width: 9, align: 'right' },
-        ],
-        s.perMarket.map((m) => {
-          const totalVol = m.buyNotionalUsd + m.sellNotionalUsd;
-          const makerPct = totalVol > 0 ? (m.makerVolumeUsd / totalVol * 100).toFixed(0) + '%' : '—';
-          const pnlStr = m.realizedPnlUsd >= 0 ? theme.success('+' + fmtUsd(m.realizedPnlUsd, 4)) : theme.error(fmtUsd(m.realizedPnlUsd, 4));
-          return [
-            m.market,
-            String(m.fills),
-            fmtUsd(totalVol, 2),
-            fmtNum(m.inventoryBase, 4),
-            m.avgCostUsd > 0 ? fmtUsd(m.avgCostUsd, 4) : '—',
-            pnlStr,
-            makerPct,
-          ];
-        }),
-      ));
-      return lines.join('\n');
-    },
-  });
-
-  engine.register({
     name: 'oracle',
     summary: 'Pyth Hermes prices for tracked assets, plus deviation vs Phoenix mid.',
     usage: 'oracle [symbol]',
@@ -1061,131 +894,6 @@ export function registerPhoenixTools(engine: ToolEngine, ctx: AppCtx): void {
   });
 
   engine.register({
-    name: 'mm-multi',
-    summary: 'Multi-market MM — quotes N markets with ASSET-level inventory aggregation.',
-    usage: 'mm-multi start <symbols-csv> --size N [--half BPS] [--gamma G] [--interval MS] [--max-inv ASSET=N,...] [--use-jito] [--tip LAMPORTS] | mm-multi stop | mm-multi status',
-    examples: [
-      'mm-multi start SOL/USDC,SOL/USDT --size 0.05',
-      'mm-multi start SOL/USDC,SOL/USDT,JitoSOL/SOL --size 0.05 --half 10 --max-inv SOL=2',
-      'mm-multi status',
-    ],
-    handler: async (args) => {
-      const sub = args[0];
-      if (sub === 'stop') {
-        if (!ctx.activeMultiMaker) return renderInfo('no multi-maker running');
-        await ctx.activeMultiMaker.stop();
-        ctx.activeMultiMaker = null;
-        return renderSuccess('multi-maker stopped');
-      }
-      if (sub === 'status') {
-        if (!ctx.activeMultiMaker) return renderInfo('no multi-maker running');
-        const s = ctx.activeMultiMaker.status;
-        const uptimeSec = Math.round((Date.now() - s.startedAt) / 1000);
-        const fillRate = s.totalPlaces > 0 ? (s.fills / s.totalPlaces * 100).toFixed(1) + '%' : '—';
-        const edgePerFill = s.fills > 0 ? s.realizedEdgeUsd / s.fills : 0;
-        const dollarVolPerHour = uptimeSec > 0 ? (s.dollarVolume / uptimeSec) * 3600 : 0;
-        const lines: string[] = [];
-        lines.push(theme.header('  MULTI-MARKET MAKER STATUS'));
-        lines.push('  ' + theme.fullSeparator().slice(0, 78));
-        lines.push(renderKV([
-          ['running', theme.success('yes') + theme.muted(`  (${uptimeSec}s uptime)`)],
-          ['markets', ctx.activeMultiMaker.symbols.join(', ')],
-          ['ticks / cancels / places / errors', `${s.ticks} / ${s.totalCancels} / ${s.totalPlaces} / ${s.totalErrors > 0 ? theme.warning(String(s.totalErrors)) : '0'}`],
-        ]));
-        lines.push('');
-        lines.push(theme.section('  PER-MARKET MIDS'));
-        const midRows: string[][] = [];
-        for (const [sym, mid] of s.mids) {
-          midRows.push([sym, mid !== null ? fmtUsd(mid, 4) : theme.muted('—'), String(s.fillsByMarket.get(sym) ?? 0)]);
-        }
-        lines.push(renderTable(
-          [{ header: 'MARKET', width: 14 }, { header: 'MID', width: 14, align: 'right' }, { header: 'FILLS', width: 6, align: 'right' }],
-          midRows,
-        ));
-        lines.push('');
-        lines.push(theme.section('  ASSET INVENTORY (shared across all markets)'));
-        const invRows: string[][] = [];
-        for (const [asset, amt] of s.invByAsset) {
-          const usd = s.invUsdByAsset.get(asset) ?? 0;
-          const color = Math.abs(amt) < 0.000001 ? theme.muted : amt > 0 ? theme.bid : theme.ask;
-          invRows.push([asset, color((amt >= 0 ? '+' : '') + fmtNum(amt, 6)), fmtUsd(usd, 2)]);
-        }
-        if (invRows.length === 0) invRows.push([theme.muted('(empty)'), '', '']);
-        lines.push(renderTable(
-          [{ header: 'ASSET', width: 10 }, { header: 'DELTA', width: 16, align: 'right' }, { header: 'USD VALUE', width: 14, align: 'right' }],
-          invRows,
-        ));
-        lines.push('');
-        lines.push(theme.section('  FILLS & EDGE (aggregate)'));
-        lines.push(renderKV([
-          ['total fills', String(s.fills) + theme.muted(`  (${s.buyFills} bid / ${s.sellFills} ask)`)],
-          ['fill rate', fillRate + theme.muted('  (fills / quotes placed)')],
-          ['dollar volume', fmtUsd(s.dollarVolume, 2) + theme.muted(`  (≈ ${fmtUsd(dollarVolPerHour, 2)}/hr)`)],
-          ['realized edge', theme.success(fmtUsd(s.realizedEdgeUsd, 4)) + theme.muted(`  (Σ |fill-mid| × size)`)],
-          ['edge per fill', s.fills > 0 ? theme.success(fmtUsd(edgePerFill, 6)) : theme.muted('—')],
-          ['last fill', s.lastFillAt !== null ? new Date(s.lastFillAt).toLocaleTimeString() : theme.muted('—')],
-        ]));
-        return lines.join('\n');
-      }
-      if (sub !== 'start') return renderError('usage: mm-multi start|stop|status');
-
-      const symbolsArg = args[1];
-      if (!symbolsArg || !symbolsArg.includes(',')) {
-        return renderError('mm-multi requires 2+ comma-separated symbols. For single-market, use `mm start`.');
-      }
-      if (!ctx.wallet.isConnected) return renderError('wallet not connected');
-      if (ctx.simulationMode) return renderWarn('simulation mode — set live with "mode live" first');
-
-      const symbols = symbolsArg.split(',').map((s) => s.trim()).filter(Boolean);
-      const flagVal = (name: string) => { const i = args.indexOf(`--${name}`); return i >= 0 ? args[i + 1] : undefined; };
-      const size = Number(flagVal('size') ?? '0.05');
-      if (!Number.isFinite(size) || size <= 0) return renderError('--size required');
-      const halfBps = Number(flagVal('half') ?? DEFAULT_MULTI_MAKER.baseHalfSpreadBps);
-      const gamma = Number(flagVal('gamma') ?? DEFAULT_MULTI_MAKER.riskAversion);
-      const interval = Number(flagVal('interval') ?? DEFAULT_MULTI_MAKER.intervalMs);
-      const useJito = args.includes('--use-jito') || args.includes('--jito');
-      const tip = flagVal('tip') ? Number(flagVal('tip')) : undefined;
-      const oracleAnchored = args.includes('--oracle-anchor') || args.includes('--anchor');
-      const maxOracleDev = flagVal('max-oracle-dev') ? Number(flagVal('max-oracle-dev')) : undefined;
-
-      // Parse --max-inv "SOL=2,USDC=500" into a Map
-      const maxInv = new Map<string, number>();
-      const maxInvRaw = flagVal('max-inv');
-      if (maxInvRaw) {
-        for (const pair of maxInvRaw.split(',')) {
-          const [asset, amt] = pair.split('=');
-          if (asset && Number.isFinite(Number(amt))) maxInv.set(asset.trim(), Number(amt));
-        }
-      }
-
-      if (ctx.activeMultiMaker) {
-        await ctx.activeMultiMaker.stop();
-        ctx.activeMultiMaker = null;
-      }
-      try {
-        ctx.activeMultiMaker = new MultiMarketMaker(ctx.rpc.connection, ctx.wallet.getKeypair()!, {
-          ...DEFAULT_MULTI_MAKER,
-          symbols,
-          quoteSizeBase: size,
-          baseHalfSpreadBps: halfBps,
-          riskAversion: gamma,
-          intervalMs: interval,
-          maxInventoryByAsset: maxInv,
-          useJito,
-          tipLamports: tip,
-          oracleAnchored,
-          maxOracleDevBps: maxOracleDev,
-        });
-        await ctx.activeMultiMaker.start();
-      } catch (e) {
-        return renderError(`failed to start multi-maker: ${(e as Error).message}`);
-      }
-      const jitoTag = useJito ? theme.accent('  + Jito') : '';
-      return renderSuccess(`multi-maker started on ${symbols.length} markets (size=${size}, half=${halfBps}bps, γ=${gamma}, interval=${interval}ms)${jitoTag}`);
-    },
-  });
-
-  engine.register({
     name: 'dashboard',
     summary: 'Full-screen risk dashboard — wallet, exposure, makers, PnL, oracle, RPC, limits. Refreshes every 5s.',
     usage: 'dashboard',
@@ -1346,126 +1054,6 @@ export function registerPhoenixTools(engine: ToolEngine, ctx: AppCtx): void {
         return renderSuccess(`test fired to ${n.channelNames.length} channel(s): ${n.channelNames.join(', ')}`);
       }
       return renderError('usage: notify [status|test]');
-    },
-  });
-
-  engine.register({
-    name: 'examples',
-    summary: 'Curated advanced trading prompts you can run via AI.',
-    usage: 'examples',
-    aliases: ['demo', 'cheatsheet'],
-    handler: async () => {
-      const groups: Array<[string, string[]]> = [
-        ['Market data', [
-          'whats sol trading at',
-          'show me the sol usdc orderbook',
-          'deep orderbook on sol with 30 levels',
-          'show individual orders on sol/usdc',
-          'whats the spread on jto usdc',
-        ]],
-        ['Oracle / risk', [
-          'sol vs pyth deviation',
-          'is sol mispriced on phoenix',
-          'oracle prices for everything',
-        ]],
-        ['Multi-market monitoring', [
-          'watch sol jto and pyth',
-          'monitor all the deep markets',
-          'show me whats happening live',
-        ]],
-        ['Pre-trade quoting', [
-          'predict my fill for buying 100 usdc of sol',
-          'what would i get if i sold 0.5 sol',
-          'how much usdc do i need for 1 sol',
-        ]],
-        ['Surgical cancels', [
-          'cancel my top 5 orders on sol/usdc',
-          'cancel my top 3 bids on jto',
-          'is anyone evictable on sol/usdc',
-        ]],
-        ['Market introspection', [
-          'show me the tick size for sol',
-          'is sol/usdc tradable right now',
-          'claim a seat on sol/usdc',
-        ]],
-        ['Triangular arb', [
-          'scan triangular arb across all phoenix markets',
-          'find me arb above 10 bps',
-        ]],
-        ['Execution', [
-          'buy 0.1 sol market with 1% slippage',
-          'place a tight bid at 85 size 0.1',
-          'sell half my sol at 90',
-          'ape 0.05 sol right now',
-          'dump 1 sol asap',
-        ]],
-        ['Inventory-aware market making', [
-          'make markets on sol/usdc with tight 5bps spread size 0.05',
-          'deposit 200 usdc to my sol seat',
-          'place a 5 level ladder size 0.1 step 3bps using free funds',
-          'mm status',
-          'stop the maker bot',
-        ]],
-        ['Seat / vault management', [
-          'free funds sol/usdc',
-          'withdraw all my sol/usdc seat funds',
-        ]],
-        ['Wallet / system', [
-          'wallet',
-          'rpc status',
-          'show my recent fills',
-        ]],
-        ['PnL & journal', [
-          'whats my pnl',
-          'show me my realized profit',
-          'resync my fills from chain',
-          'mm status',
-        ]],
-        ['Risk-aware execution', [
-          'buy 1 sol but reject if slippage over 30bps',
-          'sell 0.5 sol market with tight slippage',
-          'ape 0.2 sol but cap impact at 50bps',
-        ]],
-        ['Jito bundles (guaranteed inclusion)', [
-          'whats the jito tip floor',
-          'recommend a 75th percentile tip',
-          'buy 0.5 sol via jito',
-          'start mm via jito',
-        ]],
-        ['Multi-market MM (cross-market inventory)', [
-          'make markets on sol/usdc and sol/usdt',
-          'mm-multi start SOL/USDC,SOL/USDT,JitoSOL/SOL --size 0.05',
-          'mm-multi status',
-          'stop the multi maker',
-        ]],
-        ['Risk dashboard (full-screen control room)', [
-          'dashboard',
-          'open the dashboard',
-          'control room',
-        ]],
-        ['AI advisor (live-state coaching)', [
-          'advise',
-          'what should i do',
-          'advise where is the best edge right now',
-          'advise should i tighten my mm spread',
-        ]],
-        ['Backtester (passive sim against historical fills)', [
-          'backtest SOL/USDC --hours 4 --size 0.05 --half 8',
-          'would 20bps spread have made money on sol last 12 hours',
-          'simulate mm for the last 6 hours',
-        ]],
-      ];
-      const out: string[] = [];
-      out.push(theme.highlight('  Phoenix Terminal — advanced prompt cheatsheet'));
-      out.push(theme.muted('  Any of these can be typed directly (the AI translates them).'));
-      out.push('');
-      for (const [name, prompts] of groups) {
-        out.push(`  ${theme.accent('▸ ' + name)}`);
-        for (const p of prompts) out.push(`    ${theme.muted('•')} ${theme.value(p)}`);
-        out.push('');
-      }
-      out.push(theme.muted('  Tip: type ') + theme.highlight('ai <prompt>') + theme.muted(' for explicit AI mode, or just type naturally.'));
-      return out.join('\n');
     },
   });
 
