@@ -7,19 +7,30 @@ export default tseslint.config(
   ...tseslint.configs.recommended,
   prettier,
   {
+    // Type-aware rules need projectService to access the type checker.
+    // Only enable for src/ — tests aren't in tsconfig.include.
+    files: ['src/**/*.ts'],
+    languageOptions: {
+      parserOptions: {
+        projectService: true,
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
     rules: {
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
       '@typescript-eslint/no-explicit-any': 'error',
       'max-lines': ['warn', { max: 1200, skipBlankLines: true, skipComments: true }],
       'no-constant-condition': 'off',
       'consistent-return': 'off',
-      'no-floating-promises': 'off',
+      // High-value type-aware rules — surface real async bugs
+      '@typescript-eslint/no-floating-promises': 'error',
+      '@typescript-eslint/no-misused-promises': ['error', { checksVoidReturn: false }],
+      '@typescript-eslint/await-thenable': 'error',
     },
   },
   {
-    // Tests get linted too (phase 11) — but with relaxed rules since vitest
-    // tests intentionally use `any` casts on mock shapes and have lots of
-    // setup-time helpers that look "unused" until describe() runs them.
+    // Tests get linted too, but with NO type-aware rules (tests aren't in
+    // tsconfig.include, so projectService can't reach them). Style-only.
     files: ['tests/**/*.ts'],
     rules: {
       '@typescript-eslint/no-explicit-any': 'off',

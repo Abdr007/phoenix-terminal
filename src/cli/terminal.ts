@@ -185,15 +185,31 @@ export async function runTerminal(): Promise<void> {
     prompt();
   });
 
-  rl.on('close', async () => {
-    if (ctx.activeMaker) await ctx.activeMaker.stop();
-    if (ctx.activeMultiMaker) await ctx.activeMultiMaker.stop();
-    if (ctx.activeWatcher) await ctx.activeWatcher.stop();
-    try { await ctx.wallet.disconnect(); } catch { /* ignore */ }
+  // Shutdown sequence — extracted so the same cleanup runs on both `rl.on('close')`
+  // (interactive exit via `quit`) AND on SIGTERM (process-level kill).
+  let shuttingDown = false;
+  const gracefulShutdown = async (signal: string, exitCode = 0): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    if (signal !== 'close') {
+      console.log('\n' + renderInfo(`received ${signal} — shutting down cleanly…`));
+    }
+    try { if (ctx.activeMaker) await ctx.activeMaker.stop(); } catch { /* */ }
+    try { if (ctx.activeMultiMaker) await ctx.activeMultiMaker.stop(); } catch { /* */ }
+    try { if (ctx.activeWatcher) await ctx.activeWatcher.stop(); } catch { /* */ }
+    try { await ctx.wallet.disconnect(); } catch { /* */ }
     rpc.stopMonitor();
     closeJournal();
-    process.exit(0);
-  });
+    process.exit(exitCode);
+  };
+
+  rl.on('close', () => { void gracefulShutdown('close', 0); });
+  // SIGTERM is what `kill <pid>` and most process managers send. Without
+  // this handler Node would default-exit immediately, leaving the journal
+  // mid-write, makers still resting orders on-chain, and the keypair secret
+  // unzeroed in memory.
+  process.on('SIGTERM', () => { void gracefulShutdown('SIGTERM', 0); });
+  process.on('SIGHUP', () => { void gracefulShutdown('SIGHUP', 0); });
 }
 
 function completer(engine: ToolEngine): (line: string) => [string[], string] {

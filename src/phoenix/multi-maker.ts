@@ -313,7 +313,10 @@ export class MultiMarketMaker {
       Phoenix.PROGRAM_ID,
       (info, ctx) => {
         if (ctx?.slot && Number.isFinite(ctx.slot)) this.lastObservedSlot = ctx.slot;
-        this.handleProgramLog(info.signature);
+        // Catch rejection so an unhandled error can't crash the WS listener.
+        this.handleProgramLog(info.signature).catch((e) =>
+          getLogger().debug('mm-multi', `log-handler error: ${(e as Error).message}`),
+        );
       },
       'confirmed',
     );

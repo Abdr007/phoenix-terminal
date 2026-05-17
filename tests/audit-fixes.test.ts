@@ -176,6 +176,29 @@ describe('audit fix: clientOrderId uses elapsed-since-start (not absolute epoch)
   });
 });
 
+describe('audit fix: ToolEngine.list() memoizes + invalidates correctly', () => {
+  it('returns the same array reference until register() is called', async () => {
+    const { ToolEngine } = await import('../src/tools/engine.js');
+    const e = new ToolEngine();
+    e.register({ name: 'a', summary: '', usage: '', handler: async () => undefined });
+    e.register({ name: 'b', summary: '', usage: '', handler: async () => undefined });
+    const first = e.list();
+    const second = e.list();
+    expect(first).toBe(second); // memoized — identity check
+    expect(first.length).toBe(2);
+  });
+  it('register() invalidates the cache', async () => {
+    const { ToolEngine } = await import('../src/tools/engine.js');
+    const e = new ToolEngine();
+    e.register({ name: 'a', summary: '', usage: '', handler: async () => undefined });
+    const before = e.list();
+    e.register({ name: 'b', summary: '', usage: '', handler: async () => undefined });
+    const after = e.list();
+    expect(after).not.toBe(before);
+    expect(after.length).toBe(2);
+  });
+});
+
 describe('audit fix: logger scrubs additional secret patterns', () => {
   it('scrubs Helius RPC URL embedded API key (hostname form)', async () => {
     const { scrubForTests } = await import('../src/utils/logger.js');

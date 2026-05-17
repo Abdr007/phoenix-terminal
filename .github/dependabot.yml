@@ -10,22 +10,26 @@ updates:
     # Only allow patch updates automatically — major/minor need manual review
     versioning-strategy: "increase-if-necessary"
     ignore:
-      # Ignore major version bumps (breaking changes)
-      - dependency-name: "zod"
-        update-types: ["version-update:semver-major"]
+      # Ignore major bumps on packages where breaking changes are non-trivial
+      # to migrate. Update list reflects packages we ACTUALLY depend on.
       - dependency-name: "dotenv"
-        update-types: ["version-update:semver-major"]
-      - dependency-name: "ora"
         update-types: ["version-update:semver-major"]
       - dependency-name: "bs58"
         update-types: ["version-update:semver-major"]
-      - dependency-name: "commander"
+      - dependency-name: "chalk"
         update-types: ["version-update:semver-major"]
+      - dependency-name: "better-sqlite3"
+        update-types: ["version-update:semver-major"]
+      # Pin SDK & web3.js — we explicitly pinned these in package.json
+      # for binary-format compatibility (see CLAUDE.md). Dependabot must
+      # not float them at all.
+      - dependency-name: "@ellipsis-labs/phoenix-sdk"
+      - dependency-name: "@solana/web3.js"
+      - dependency-name: "@anthropic-ai/sdk"
     groups:
       solana:
         patterns:
           - "@solana/*"
-          - "flash-sdk"
           - "@coral-xyz/*"
           - "@pythnetwork/*"
       dev-tools:
@@ -37,8 +41,7 @@ updates:
           - "@eslint/*"
           - "typescript-eslint"
           - "prettier"
-          - "husky"
-          - "lint-staged"
+          - "@types/*"
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:

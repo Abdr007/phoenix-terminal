@@ -159,7 +159,13 @@ export class Maker {
         // Capture the real slot from the subscription context before we
         // dispatch the async decode work. Better than `slot: 0` in journal.
         if (ctx?.slot && Number.isFinite(ctx.slot)) this.lastObservedSlot = ctx.slot;
-        this.handleProgramLog(info.signature);
+        // Fire-and-forget: handleProgramLog has its own try/catch, but we
+        // catch here too so a rejection in the promise wrapper can't
+        // crash the WS listener (Node ≥15 default unhandledRejection
+        // policy is process-exit).
+        this.handleProgramLog(info.signature).catch((e) =>
+          getLogger().debug('mm', `log-handler error: ${(e as Error).message}`),
+        );
       },
       'confirmed',
     );
