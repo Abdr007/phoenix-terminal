@@ -182,6 +182,16 @@ export class Notifier {
     recent.push(now);
     this.sentTimesByChannel.set(channel, recent);
     this.lastSentByChannelKind.set(key, now);
+    // Opportunistic GC: prune stale `lastSentByChannelKind` entries so the
+    // map doesn't accumulate one entry per (channel × kind) combo forever
+    // (kinds are bounded but a long-running MM could see every kind).
+    // Only runs when we just added one — amortizes O(n) scan over insertions.
+    if (this.lastSentByChannelKind.size > 200) {
+      const cutoff = now - 60 * 60_000; // anything older than 1h is gone
+      for (const [k, t] of this.lastSentByChannelKind) {
+        if (t < cutoff) this.lastSentByChannelKind.delete(k);
+      }
+    }
     return true;
   }
 

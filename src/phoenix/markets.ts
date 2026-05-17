@@ -96,13 +96,23 @@ export const MARKETS: MarketDef[] = [
 export const DEEP_MARKETS = MARKETS.filter((m) => m.liquidity === 'deep').map((m) => m.address);
 export const DEFAULT_WATCH_MARKETS = MARKETS.filter((m) => m.liquidity !== 'thin').map((m) => m.address);
 
+// Pre-built lookup indices. With 10+ markets and ~35 call sites (many in
+// per-instruction loops in the indexer + journal hot path), the prior
+// triple linear-scan dominated. O(1) Map lookup instead.
+const _bySymbol = new Map<string, MarketDef>();
+const _byAddress = new Map<string, MarketDef>();
+for (const m of MARKETS) {
+  _bySymbol.set(m.symbol.toUpperCase(), m);
+  _bySymbol.set(m.symbol.replace('/', '-').toUpperCase(), m); // SOL-USDC alias
+  _byAddress.set(m.address, m);
+}
+
 export function findMarket(symbolOrAddress: string): MarketDef | undefined {
-  const s = symbolOrAddress.toUpperCase().trim();
-  return (
-    MARKETS.find((m) => m.symbol.toUpperCase() === s) ||
-    MARKETS.find((m) => m.address === symbolOrAddress) ||
-    MARKETS.find((m) => m.symbol.replace('/', '-').toUpperCase() === s)
-  );
+  // Exact address match — preserve case-sensitive lookup (base58 is case-sensitive)
+  const byAddr = _byAddress.get(symbolOrAddress);
+  if (byAddr) return byAddr;
+  // Symbol match — case-insensitive, both `/` and `-` separator forms
+  return _bySymbol.get(symbolOrAddress.toUpperCase().trim());
 }
 
 export function listSymbols(): string[] {

@@ -176,6 +176,33 @@ describe('audit fix: clientOrderId uses elapsed-since-start (not absolute epoch)
   });
 });
 
+describe('audit fix: findMarket O(1) lookups preserve all match semantics', () => {
+  it('exact symbol match (case-insensitive)', async () => {
+    const { findMarket } = await import('../src/phoenix/markets.js');
+    expect(findMarket('SOL/USDC')?.symbol).toBe('SOL/USDC');
+    expect(findMarket('sol/usdc')?.symbol).toBe('SOL/USDC');
+    expect(findMarket('Sol/Usdc')?.symbol).toBe('SOL/USDC');
+  });
+  it('dash-separator alias (SOL-USDC ≡ SOL/USDC)', async () => {
+    const { findMarket } = await import('../src/phoenix/markets.js');
+    expect(findMarket('SOL-USDC')?.symbol).toBe('SOL/USDC');
+    expect(findMarket('sol-usdc')?.symbol).toBe('SOL/USDC');
+  });
+  it('exact address match (case-sensitive — base58 IS case-sensitive)', async () => {
+    const { findMarket, MARKETS } = await import('../src/phoenix/markets.js');
+    const sol = MARKETS.find((m) => m.symbol === 'SOL/USDC')!;
+    expect(findMarket(sol.address)?.address).toBe(sol.address);
+    // Lowercased address should NOT match — base58 is case-sensitive and
+    // accepting a lowercased address would silently bind the wrong market.
+    expect(findMarket(sol.address.toLowerCase())?.address).not.toBe(sol.address);
+  });
+  it('returns undefined for unknown markets', async () => {
+    const { findMarket } = await import('../src/phoenix/markets.js');
+    expect(findMarket('NONEXISTENT/USDC')).toBeUndefined();
+    expect(findMarket('')).toBeUndefined();
+  });
+});
+
 describe('audit fix: ToolEngine.list() memoizes + invalidates correctly', () => {
   it('returns the same array reference until register() is called', async () => {
     const { ToolEngine } = await import('../src/tools/engine.js');

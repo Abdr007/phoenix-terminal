@@ -29,7 +29,11 @@ export interface AiTranslation {
 // when arrived-at via the AI translator. Default-deny — list everything that
 // touches state, including non-obvious paths like `evict`, `claim-seat`,
 // `free-funds`, and the multi-* variants.
-const DESTRUCTIVE_COMMANDS = new Set([
+/** @internal — exported for testability so a regression test can verify
+ *  that every command registered with the engine that signs a transaction
+ *  is listed here. Adding a new signing command without adding it here is
+ *  a critical safety regression. */
+export const DESTRUCTIVE_COMMANDS = new Set([
   // Trading
   'buy', 'sell', 'cancel', 'cancel-id', 'cancel-top', 'reduce',
   'ladder',
@@ -282,7 +286,14 @@ export class AiInterpreter {
   }
 
   private cachePut(prompt: string, translation: AiTranslation): void {
+    // Defensive size cap — a malicious or hallucinated Anthropic response
+    // could theoretically be huge. Don't cache anything over ~16KB per entry.
+    const entrySize = (translation.command?.length ?? 0)
+      + (translation.reasoning?.length ?? 0)
+      + (translation.clarificationNeeded?.length ?? 0);
+    if (entrySize > 16_384) return;
     const k = this.cacheKey(prompt);
+    if (k.length > 1024) return; // also drop absurdly long prompts
     if (this.cache.size >= AiInterpreter.CACHE_MAX) {
       const oldest = this.cache.keys().next().value;
       if (oldest !== undefined) this.cache.delete(oldest);
